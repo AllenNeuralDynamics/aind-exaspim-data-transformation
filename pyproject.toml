@@ -3,8 +3,13 @@ requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
 [project]
+<<<<<<< HEAD
 name = "aind-exaspim-data-transformation"
 description = "Generated from aind-library-template"
+=======
+name = "aind-library-template"
+description = "Prints messages to stdout. Simple boilerplate for libraries."
+>>>>>>> 434d9da (Initialize ci-101-update-version)
 license = {text = "MIT"}
 requires-python = ">=3.10"
 authors = [
@@ -17,9 +22,16 @@ readme = "README.md"
 dynamic = ["version"]
 
 dependencies = [
+<<<<<<< HEAD
 ]
 
 [dependency-groups]
+=======
+    'pandas'
+]
+
+[project.optional-dependencies]
+>>>>>>> 434d9da (Initialize ci-101-update-version)
 dev = [
     'black',
     'coverage',
@@ -34,7 +46,11 @@ dev = [
 where = ["src"]
 
 [tool.setuptools.dynamic]
+<<<<<<< HEAD
 version = {attr = "aind_exaspim_data_transformation.__version__"}
+=======
+version = {attr = "aind_library_template.__version__"}
+>>>>>>> 434d9da (Initialize ci-101-update-version)
 
 [tool.black]
 line-length = 79
@@ -60,7 +76,11 @@ exclude = '''
 
 [tool.coverage.run]
 omit = ["*__init__*"]
+<<<<<<< HEAD
 source = ["aind_exaspim_data_transformation", "tests"]
+=======
+source = ["aind_library_template", "tests"]
+>>>>>>> 434d9da (Initialize ci-101-update-version)
 
 [tool.coverage.report]
 exclude_lines = [

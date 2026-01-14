@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 # aind-exaspim-data-transformation
+=======
+# aind-library-template
+>>>>>>> 434d9da (Initialize ci-101-update-version)
 
 [![License](https://img.shields.io/badge/license-MIT-brightgreen)](LICENSE)
 ![Code Style](https://img.shields.io/badge/code%20style-black-black)
@@ -36,6 +40,7 @@ pip install -e .
 
 To develop the code, run
 ```bash
+<<<<<<< HEAD
 pip install -e . --group dev
 ```
 Note: --group flag is available only in pip versions >=25.1
@@ -43,4 +48,7 @@ Note: --group flag is available only in pip versions >=25.1
 Alternatively, if using `uv`, run
 ```bash
 uv sync
+=======
+pip install -e .[dev]
+>>>>>>> 434d9da (Initialize ci-101-update-version)
 ```
