@@ -19,7 +19,11 @@ jobs:
         python-version: ${{ matrix.python-version }}
     - name: Install dependencies
       run: | 
+<<<<<<< HEAD
         python -m pip install -e . --group dev --no-cache-dir
+=======
+        python -m pip install -e .[dev]
+>>>>>>> 434d9da (Initialize ci-101-update-version)
     - name: Run linter checks
       run: flake8 . && interrogate --verbose .
     - name: Run tests and coverage

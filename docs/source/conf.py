@@ -10,7 +10,11 @@ from datetime import date
 from os.path import abspath, dirname
 from pathlib import Path
 
+<<<<<<< HEAD
 from aind_exaspim_data_transformation import __version__ as package_version
+=======
+from aind_library_template import __version__ as package_version
+>>>>>>> 434d9da (Initialize ci-101-update-version)
 
 INSTITUTE_NAME = "Allen Institute for Neural Dynamics"
 
