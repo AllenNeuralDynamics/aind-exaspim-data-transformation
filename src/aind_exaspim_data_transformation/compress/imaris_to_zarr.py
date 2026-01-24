@@ -2,15 +2,23 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import os
 import re
 from abc import ABC, abstractmethod
-from typing import Any, List, Optional, Tuple
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 import dask.array as da
 import h5py
 import numpy as np
+import zarr
+from numcodecs import Blosc
+
+from aind_exaspim_data_transformation.compress.omezarr_metadata import (
+    write_ome_ngff_metadata,
+)
 
 
 class MissingDatasetError(FileNotFoundError):
@@ -225,3 +233,155 @@ class DataReaderFactory:
         if ext not in self.VALID_EXTENSIONS:
             raise NotImplementedError(f"File type {ext} not supported")
         return self.factory[ext](filepath)
+
+
+def imaris_to_zarr_writer(
+    imaris_path: str,
+    output_path: str,
+    voxel_size: Optional[List[float]] = None,
+    chunk_size: Optional[List[int]] = None,
+    scale_factor: Optional[List[int]] = None,
+    n_lvls: int = 5,
+    channel_name: Optional[str] = None,
+    stack_name: Optional[str] = None,
+    compressor_kwargs: Optional[Dict] = None,
+    bucket_name: Optional[str] = None,
+) -> None:
+    """
+    Convert an Imaris file to OME-Zarr format.
+
+    Parameters
+    ----------
+    imaris_path : str
+        Path to the input Imaris file (.ims or .h5)
+    output_path : str
+        Path where the output OME-Zarr will be written
+    voxel_size : Optional[List[float]]
+        Voxel size in [Z, Y, X] order in micrometers. 
+        If None, will be extracted from Imaris metadata.
+    chunk_size : Optional[List[int]]
+        Chunk size for zarr arrays in [Z, Y, X] order.
+        Default is [128, 128, 128]
+    scale_factor : Optional[List[int]]
+        Downsampling scale factors in [Z, Y, X] order.
+        Default is [2, 2, 2]
+    n_lvls : int
+        Number of pyramid levels to generate. Default is 5.
+    channel_name : Optional[str]
+        Name for the channel. If None, uses stack name.
+    stack_name : Optional[str]
+        Name for the output zarr store. If None, derives from input filename.
+    compressor_kwargs : Optional[Dict]
+        Compression settings for Blosc compressor.
+        Default is {"cname": "zstd", "clevel": 3, "shuffle": Blosc.SHUFFLE}
+    bucket_name : Optional[str]
+        S3 bucket name for cloud storage. If None, writes locally.
+
+    Returns
+    -------
+    None
+    """
+    logging.info(f"Starting Imaris to Zarr conversion: {imaris_path}")
+
+    # Set defaults
+    if chunk_size is None:
+        chunk_size = [128, 128, 128]
+    if scale_factor is None:
+        scale_factor = [2, 2, 2]
+    if compressor_kwargs is None:
+        compressor_kwargs = {
+            "cname": "zstd",
+            "clevel": 3,
+            "shuffle": Blosc.SHUFFLE,
+        }
+    if stack_name is None:
+        stack_name = Path(imaris_path).stem + ".ome.zarr"
+
+    # Initialize compressor
+    compressor = Blosc(**compressor_kwargs)
+
+    # Open Imaris file
+    with ImarisReader(imaris_path) as reader:
+        # Get voxel size from file if not provided
+        if voxel_size is None:
+            voxel_size_from_file, unit = reader.get_voxel_size()
+            voxel_size = voxel_size_from_file
+            logging.info(f"Extracted voxel size from Imaris: {voxel_size} {unit}")
+        else:
+            logging.info(f"Using provided voxel size: {voxel_size}")
+
+        # Get image shape
+        shape = reader.get_shape()
+        logging.info(f"Image shape (Z, Y, X): {shape}")
+
+        # Determine actual number of levels available
+        actual_n_lvls = min(n_lvls, reader.n_levels)
+        if actual_n_lvls < n_lvls:
+            logging.warning(
+                f"Requested {n_lvls} levels but only {actual_n_lvls} available in Imaris file"
+            )
+
+        # Get pyramid as dask arrays
+        pyramid = reader.get_dask_pyramid(
+            num_levels=actual_n_lvls,
+            timepoint=0,
+            channel=0,
+            chunks=tuple(chunk_size),
+        )
+
+        # Prepare output path
+        output_zarr_path = Path(output_path) / stack_name
+        if bucket_name:
+            # S3 path
+            store_path = f"s3://{bucket_name}/{output_zarr_path}"
+            logging.info(f"Writing to S3: {store_path}")
+        else:
+            # Local filesystem
+            store_path = str(output_zarr_path)
+            output_zarr_path.parent.mkdir(parents=True, exist_ok=True)
+            logging.info(f"Writing to local: {store_path}")
+
+        # Create root zarr group
+        root = zarr.open_group(store_path, mode="w")
+
+        # Write each pyramid level
+        for level_idx, dask_array in enumerate(pyramid):
+            level_path = f"{level_idx}"
+            logging.info(
+                f"Writing level {level_idx}: shape={dask_array.shape}, "
+                f"chunks={dask_array.chunksize}"
+            )
+
+            # Create zarr array for this level
+            z_array = root.create_dataset(
+                level_path,
+                shape=dask_array.shape,
+                chunks=dask_array.chunksize,
+                dtype=dask_array.dtype,
+                compressor=compressor,
+                overwrite=True,
+            )
+
+            # Write dask array to zarr
+            da.to_zarr(dask_array, z_array, overwrite=True)
+
+        # Generate and write OME-NGFF metadata
+        # Wrap shape in 5D format: (T, C, Z, Y, X)
+        shape_5d = (1, 1) + tuple(shape)
+        chunk_size_5d = (1, 1) + tuple(chunk_size)
+
+        metadata_dict = write_ome_ngff_metadata(
+            arr_shape=list(shape_5d),
+            chunk_size=list(chunk_size_5d),
+            image_name=channel_name or stack_name,
+            n_lvls=actual_n_lvls,
+            scale_factors=tuple(scale_factor),
+            voxel_size=tuple(voxel_size),
+            channel_names=[channel_name or stack_name],
+        )
+
+        # Write metadata to zarr attributes
+        root.attrs.update(metadata_dict)
+
+        logging.info(f"Successfully wrote {stack_name} with {actual_n_lvls} levels")
+
