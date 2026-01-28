@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import dask.array as da
 import h5py
+import hdf5plugin  # noqa: F401 - registers HDF5 compression filters (LZ4, etc.)
 import numpy as np
 import zarr
 from numcodecs import Blosc
@@ -85,33 +86,76 @@ class ImarisReader(DataReader):
         self.close()
 
     def as_dask_array(
-        self, data_path: str = DEFAULT_DATA_PATH, chunks: Any = True
+        self, data_path: str = DEFAULT_DATA_PATH, chunks: Any = True,
+        trim_padding: bool = False
     ) -> da.Array:
-        """Return the image stack as a Dask Array."""
+        """Return the image stack as a Dask Array.
+        
+        Parameters
+        ----------
+        data_path : str
+            Path to the dataset within the HDF5 file
+        chunks : Any
+            Chunk specification for dask array. Use True for auto, 
+            None for no chunking, or tuple for explicit chunks.
+        trim_padding : bool
+            If True, trim the array to the "real" shape from metadata.
+            If False (default), return the full padded HDF5 dataset.
+            Note: Trimming may cause chunk misalignment issues.
+        
+        Uses lock=True to ensure thread-safe access to the HDF5 file,
+        enabling parallel reads with the threaded scheduler.
+        """
+        dataset = self.get_dataset(data_path)
+        
+        # Use lock=True to enable thread-safe HDF5 access
+        # This allows dask to use multiple threads for parallel reads
+        a = da.from_array(dataset, chunks=chunks, lock=True)
+        
+        if trim_padding:
+            lvl = self._get_res_lvl(data_path)
+            real_shape_at_lvl = self._get_shape_at_lvl(lvl)
+            a = a[
+                : real_shape_at_lvl[0],
+                : real_shape_at_lvl[1],
+                : real_shape_at_lvl[2],
+            ]
+        
+        return a
 
-        lvl = self._get_res_lvl(data_path)
-        real_shape_at_lvl = self._get_shape_at_lvl(lvl)
-
-        a = da.from_array(self.get_dataset(data_path), chunks=chunks)
-        return a[
-            : real_shape_at_lvl[0],
-            : real_shape_at_lvl[1],
-            : real_shape_at_lvl[2],
-        ]
-
-    def as_array(self, data_path: str = DEFAULT_DATA_PATH) -> np.ndarray:
-        lvl = self._get_res_lvl(data_path)
-        real_shape_at_lvl = self._get_shape_at_lvl(lvl)
-        return self.get_dataset(data_path)[
-            : real_shape_at_lvl[0],
-            : real_shape_at_lvl[1],
-            : real_shape_at_lvl[2],
-        ]
+    def as_array(self, data_path: str = DEFAULT_DATA_PATH, trim_padding: bool = False) -> np.ndarray:
+        """Return the image stack as a NumPy array.
+        
+        Parameters
+        ----------
+        data_path : str
+            Path to the dataset within the HDF5 file
+        trim_padding : bool
+            If True, trim the array to the "real" shape from metadata.
+            If False (default), return the full padded HDF5 dataset.
+        """
+        dataset = self.get_dataset(data_path)
+        
+        if trim_padding:
+            lvl = self._get_res_lvl(data_path)
+            real_shape_at_lvl = self._get_shape_at_lvl(lvl)
+            return dataset[
+                : real_shape_at_lvl[0],
+                : real_shape_at_lvl[1],
+                : real_shape_at_lvl[2],
+            ]
+        else:
+            return dataset[:]
 
     def get_dataset(self, data_path: str = DEFAULT_DATA_PATH) -> h5py.Dataset:
         return self._require_handle()[data_path]
 
-    def get_shape(self) -> tuple:
+    def get_shape(self, data_path: str = DEFAULT_DATA_PATH) -> tuple:
+        """Return the actual HDF5 dataset shape (may include padding)."""
+        return self.get_dataset(data_path).shape
+
+    def get_metadata_shape(self) -> tuple:
+        """Return the 'real' image shape from Imaris metadata (excludes padding)."""
         info = self.get_dataset_info()
         return (
             int(info.attrs["Z"].tobytes()),
@@ -133,22 +177,39 @@ class ImarisReader(DataReader):
         num_levels: int,
         timepoint: int = 0,
         channel: int = 0,
-        chunks: Any = True,
+        chunks: Any = "native",
     ) -> List[da.Array]:
+        """Get multiple resolution levels as dask arrays.
+        
+        Parameters
+        ----------
+        num_levels : int
+            Number of pyramid levels to retrieve
+        timepoint : int
+            Timepoint index (default 0)
+        channel : int
+            Channel index (default 0)
+        chunks : Any
+            Chunk specification. Use "native" (default) to use HDF5 native chunks,
+            True for dask auto-chunking, None for no chunking, or tuple for explicit.
+        """
         darrays: List[da.Array] = []
         for lvl in range(0, num_levels):
             ds_path = f"/DataSet/ResolutionLevel {lvl}/TimePoint {timepoint}/Channel {channel}/Data"
             if ds_path not in self.get_handle():
                 raise MissingDatasetError(f"{ds_path} does not exist")
 
-            if isinstance(chunks, bool) or chunks is None:
+            # Determine chunks for this level
+            if chunks == "native":
+                # Use the native HDF5 chunks - most efficient for reading
+                lvl_chunks = self.get_chunks(ds_path)
+            elif isinstance(chunks, bool) or chunks is None:
                 lvl_chunks = chunks
             else:
-                lvl_shape = self._get_shape_at_lvl(lvl)
+                # Explicit chunks provided - clamp to level shape
+                lvl_shape = self.get_shape(ds_path)
                 assert len(chunks) == len(lvl_shape)
-                lvl_chunks = list(chunks)
-                for i in range(len(chunks)):
-                    lvl_chunks[i] = min(chunks[i], lvl_shape[i])
+                lvl_chunks = tuple(min(c, s) for c, s in zip(chunks, lvl_shape))
 
             darrays.append(self.as_dask_array(ds_path, chunks=lvl_chunks))
 
@@ -219,20 +280,21 @@ class ImarisReader(DataReader):
 class DataReaderFactory:
     VALID_EXTENSIONS = [".h5", ".ims"]
 
-    def __init__(self):
-        self.factory = {
-            ".h5": ImarisReader,
-            ".ims": ImarisReader,
-        }
+    _factory = {
+        ".h5": ImarisReader,
+        ".ims": ImarisReader,
+    }
 
-    def get_valid_extensions(self):
-        return self.VALID_EXTENSIONS
+    @classmethod
+    def get_valid_extensions(cls):
+        return cls.VALID_EXTENSIONS
 
-    def create(self, filepath: str) -> DataReader:
+    @classmethod
+    def create(cls, filepath: str) -> DataReader:
         _, ext = os.path.splitext(filepath)
-        if ext not in self.VALID_EXTENSIONS:
+        if ext not in cls.VALID_EXTENSIONS:
             raise NotImplementedError(f"File type {ext} not supported")
-        return self.factory[ext](filepath)
+        return cls._factory[ext](filepath)
 
 
 def imaris_to_zarr_writer(
@@ -310,10 +372,6 @@ def imaris_to_zarr_writer(
         else:
             logging.info(f"Using provided voxel size: {voxel_size}")
 
-        # Get image shape
-        shape = reader.get_shape()
-        logging.info(f"Image shape (Z, Y, X): {shape}")
-
         # Determine actual number of levels available
         actual_n_lvls = min(n_lvls, reader.n_levels)
         if actual_n_lvls < n_lvls:
@@ -321,13 +379,20 @@ def imaris_to_zarr_writer(
                 f"Requested {n_lvls} levels but only {actual_n_lvls} available in Imaris file"
             )
 
-        # Get pyramid as dask arrays
+        # Get pyramid as dask arrays (using native HDF5 chunks for efficient reading)
+        native_chunks = reader.get_chunks()
+        logging.info(f"Using native HDF5 chunks: {native_chunks}")
+        
         pyramid = reader.get_dask_pyramid(
             num_levels=actual_n_lvls,
             timepoint=0,
             channel=0,
-            chunks=tuple(chunk_size),
+            chunks=native_chunks,  # Use native chunks to avoid rechunking overhead
         )
+        
+        # Get the shape from the first pyramid level
+        shape = pyramid[0].shape
+        logging.info(f"Image shape (Z, Y, X): {shape}")
 
         # Prepare output path
         output_zarr_path = Path(output_path) / stack_name
@@ -362,13 +427,20 @@ def imaris_to_zarr_writer(
                 overwrite=True,
             )
 
-            # Write dask array to zarr
-            da.to_zarr(dask_array, z_array, overwrite=True)
+            # Write dask array to zarr using compute=True to process lazily
+            # This streams chunks through memory instead of loading everything
+            da.to_zarr(
+                dask_array, 
+                z_array, 
+                overwrite=True,
+                compute=True,  # Execute the write
+            )
 
         # Generate and write OME-NGFF metadata
         # Wrap shape in 5D format: (T, C, Z, Y, X)
+        # Use the native chunks for metadata (what's actually stored)
         shape_5d = (1, 1) + tuple(shape)
-        chunk_size_5d = (1, 1) + tuple(chunk_size)
+        chunk_size_5d = (1, 1) + tuple(native_chunks)
 
         metadata_dict = write_ome_ngff_metadata(
             arr_shape=list(shape_5d),

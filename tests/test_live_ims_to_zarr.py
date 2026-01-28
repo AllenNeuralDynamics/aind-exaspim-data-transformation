@@ -69,11 +69,16 @@ class TestLiveImsToZarr(unittest.TestCase):
         reader = ImarisReader(str(ims_file))
         
         with reader:
-            # Test basic properties
+            # Test basic properties - get_shape returns actual HDF5 shape
             shape = reader.get_shape()
-            print(f"  Shape: {shape}")
+            print(f"  HDF5 Shape: {shape}")
             self.assertEqual(len(shape), 3, "Shape should be 3D (ZYX)")
             self.assertTrue(all(s > 0 for s in shape), "All dimensions should be > 0")
+            
+            # Test metadata shape (excludes padding)
+            metadata_shape = reader.get_metadata_shape()
+            print(f"  Metadata Shape: {metadata_shape}")
+            self.assertEqual(len(metadata_shape), 3, "Metadata shape should be 3D (ZYX)")
             
             # Test voxel size - returns (voxel_size, unit)
             voxel_size, unit = reader.get_voxel_size()
@@ -174,20 +179,21 @@ class TestLiveImsToZarr(unittest.TestCase):
             self.skipTest("No IMS files found in data directory")
         
         ims_file = self.ims_files[0]
-        output_path = self.output_dir / f"{ims_file.stem}.zarr"
+        output_path = self.output_dir
+        # The writer appends stack_name to output_path, defaulting to {stem}.ome.zarr
+        expected_zarr_path = output_path / f"{ims_file.stem}.ome.zarr"
         
         print(f"\nTesting full conversion pipeline:")
         print(f"  Input: {ims_file.name}")
-        print(f"  Output: {output_path}")
+        print(f"  Output directory: {output_path}")
+        print(f"  Expected zarr: {expected_zarr_path}")
         
         # Conversion parameters
         n_lvls = 3
         scale_factor = [2, 2, 2]
-        chunk_size = [128, 128, 128]
         
         print(f"  Pyramid levels: {n_lvls}")
         print(f"  Scale factor: {scale_factor}")
-        print(f"  Chunk size: {chunk_size}")
         
         # Run conversion
         print(f"  Starting conversion...")
@@ -197,21 +203,20 @@ class TestLiveImsToZarr(unittest.TestCase):
             n_lvls=n_lvls,
             scale_factor=scale_factor,
             voxel_size=None,  # Extract from file
-            chunk_size=chunk_size,
             compressor_kwargs={"cname": "zstd", "clevel": 5, "shuffle": 1},
         )
         
         # Verify output
-        self.assertTrue(output_path.exists(), "Output zarr should exist")
+        self.assertTrue(expected_zarr_path.exists(), f"Output zarr should exist at {expected_zarr_path}")
         
         # Check for pyramid levels
         for i in range(n_lvls):
-            level_path = output_path / str(i)
-            self.assertTrue(level_path.exists(), f"Pyramid level {i} should exist")
+            level_path = expected_zarr_path / str(i)
+            self.assertTrue(level_path.exists(), f"Pyramid level {i} should exist at {level_path}")
             print(f"  ✓ Level {i} created: {level_path}")
         
         # Check metadata
-        zattrs_path = output_path / ".zattrs"
+        zattrs_path = expected_zarr_path / ".zattrs"
         self.assertTrue(zattrs_path.exists(), "Zarr attributes should exist")
         print(f"  ✓ Metadata file created: {zattrs_path}")
         
@@ -220,7 +225,7 @@ class TestLiveImsToZarr(unittest.TestCase):
         # Print output size
         import subprocess
         result = subprocess.run(
-            ["du", "-sh", str(output_path)],
+            ["du", "-sh", str(expected_zarr_path)],
             capture_output=True,
             text=True
         )
@@ -233,7 +238,9 @@ class TestLiveImsToZarr(unittest.TestCase):
             self.skipTest("No IMS files found in data directory")
         
         ims_file = self.ims_files[0]
-        output_path = self.output_dir / f"{ims_file.stem}_custom_voxel.zarr"
+        output_path = self.output_dir
+        custom_stack_name = f"{ims_file.stem}_custom_voxel.ome.zarr"
+        expected_zarr_path = output_path / custom_stack_name
         
         print(f"\nTesting conversion with custom voxel size:")
         print(f"  Input: {ims_file.name}")
@@ -247,10 +254,10 @@ class TestLiveImsToZarr(unittest.TestCase):
             n_lvls=2,
             scale_factor=[2, 2, 2],
             voxel_size=custom_voxel_size,
-            chunk_size=[128, 128, 128],
+            stack_name=custom_stack_name,
         )
         
-        self.assertTrue(output_path.exists())
+        self.assertTrue(expected_zarr_path.exists())
         print(f"✓ Conversion with custom voxel size completed")
 
     def test_process_multiple_files(self):
@@ -261,20 +268,19 @@ class TestLiveImsToZarr(unittest.TestCase):
         print(f"\nTesting batch conversion of {len(self.ims_files)} files:")
         
         for ims_file in self.ims_files:
-            output_path = self.output_dir / f"{ims_file.stem}.zarr"
+            expected_zarr_path = self.output_dir / f"{ims_file.stem}.ome.zarr"
             print(f"  Converting {ims_file.name}...")
             
             imaris_to_zarr_writer(
                 imaris_path=str(ims_file),
-                output_path=str(output_path),
+                output_path=str(self.output_dir),
                 n_lvls=2,
                 scale_factor=[2, 2, 2],
                 voxel_size=None,
-                chunk_size=[128, 128, 128],
             )
             
-            self.assertTrue(output_path.exists())
-            print(f"    ✓ Completed")
+            self.assertTrue(expected_zarr_path.exists())
+            print(f"    ✓ Completed: {expected_zarr_path}")
         
         print(f"✓ All {len(self.ims_files)} files converted successfully")
 
