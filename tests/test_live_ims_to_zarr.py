@@ -4,16 +4,157 @@ This test module is designed to work with actual IMS files to validate
 the conversion pipeline end-to-end.
 """
 
+import os
+import time
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 import shutil
 import tempfile
+import threading
+
+import psutil
 
 from aind_exaspim_data_transformation.compress.imaris_to_zarr import (
     DataReaderFactory,
     ImarisReader,
     imaris_to_zarr_writer,
 )
+
+
+class ResourceMonitor:
+    """Monitor CPU and memory usage during test execution."""
+    
+    def __init__(self, interval: float = 1.0):
+        """
+        Initialize the resource monitor.
+        
+        Parameters
+        ----------
+        interval : float
+            Sampling interval in seconds (default 1.0)
+        """
+        self.interval = interval
+        self.process = psutil.Process(os.getpid())
+        self._stop_event = threading.Event()
+        self._thread = None
+        
+        # Metrics storage
+        self.memory_samples = []  # RSS memory in MB
+        self.cpu_samples = []     # CPU percent
+        self.timestamps = []      # Time since start
+        
+    def start(self):
+        """Start monitoring in background thread."""
+        self._stop_event.clear()
+        self.memory_samples = []
+        self.cpu_samples = []
+        self.timestamps = []
+        self._start_time = time.time()
+        self._thread = threading.Thread(target=self._monitor_loop, daemon=True)
+        self._thread.start()
+        
+    def stop(self):
+        """Stop monitoring and wait for thread to finish."""
+        self._stop_event.set()
+        if self._thread:
+            self._thread.join(timeout=2.0)
+            
+    def _monitor_loop(self):
+        """Background loop to sample resource usage."""
+        while not self._stop_event.is_set():
+            try:
+                mem_info = self.process.memory_info()
+                cpu_percent = self.process.cpu_percent(interval=None)
+                
+                self.memory_samples.append(mem_info.rss / (1024 * 1024))  # MB
+                self.cpu_samples.append(cpu_percent)
+                self.timestamps.append(time.time() - self._start_time)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                break
+                
+            self._stop_event.wait(self.interval)
+    
+    def get_stats(self) -> dict:
+        """Get summary statistics of resource usage."""
+        if not self.memory_samples:
+            return {"error": "No samples collected"}
+            
+        return {
+            "memory_mb": {
+                "min": min(self.memory_samples),
+                "max": max(self.memory_samples),
+                "avg": sum(self.memory_samples) / len(self.memory_samples),
+                "final": self.memory_samples[-1],
+            },
+            "cpu_percent": {
+                "min": min(self.cpu_samples) if self.cpu_samples else 0,
+                "max": max(self.cpu_samples) if self.cpu_samples else 0,
+                "avg": sum(self.cpu_samples) / len(self.cpu_samples) if self.cpu_samples else 0,
+            },
+            "duration_seconds": self.timestamps[-1] if self.timestamps else 0,
+            "num_samples": len(self.memory_samples),
+        }
+    
+    def print_stats(self, operation_name: str = "Operation"):
+        """Print formatted statistics."""
+        stats = self.get_stats()
+        if "error" in stats:
+            print(f"  ⚠ {stats['error']}")
+            return
+            
+        print(f"\n  📊 Resource Usage for '{operation_name}':")
+        print(f"     Duration: {stats['duration_seconds']:.2f}s")
+        print(f"     Memory (MB): min={stats['memory_mb']['min']:.1f}, "
+              f"max={stats['memory_mb']['max']:.1f}, "
+              f"avg={stats['memory_mb']['avg']:.1f}")
+        print(f"     CPU (%): min={stats['cpu_percent']['min']:.1f}, "
+              f"max={stats['cpu_percent']['max']:.1f}, "
+              f"avg={stats['cpu_percent']['avg']:.1f}")
+
+
+@contextmanager
+def timed_operation(name: str, monitor_resources: bool = True, interval: float = 0.5):
+    """
+    Context manager for timing operations with optional resource monitoring.
+    
+    Parameters
+    ----------
+    name : str
+        Name of the operation for logging
+    monitor_resources : bool
+        Whether to monitor CPU/memory (default True)
+    interval : float
+        Resource sampling interval in seconds
+        
+    Yields
+    ------
+    dict
+        Stats dictionary that will be populated after the operation
+    """
+    stats = {}
+    monitor = ResourceMonitor(interval=interval) if monitor_resources else None
+    
+    print(f"\n  ⏱ Starting: {name}")
+    start_time = time.time()
+    
+    if monitor:
+        monitor.start()
+    
+    try:
+        yield stats
+    finally:
+        elapsed = time.time() - start_time
+        
+        if monitor:
+            monitor.stop()
+            resource_stats = monitor.get_stats()
+            stats.update(resource_stats)
+            monitor.print_stats(name)
+        else:
+            print(f"  ⏱ {name} completed in {elapsed:.2f}s")
+            
+        stats["elapsed_seconds"] = elapsed
 
 
 class TestLiveImsToZarr(unittest.TestCase):
@@ -30,13 +171,21 @@ class TestLiveImsToZarr(unittest.TestCase):
         cls.output_dir = Path(cls.temp_dir)
         cls.delete_output_dir = False
         
-        print(f"\n=== Live Test Setup ===")
+        # System info
+        mem = psutil.virtual_memory()
+        cpu_count = psutil.cpu_count()
+        
+        print(f"\n{'='*60}")
+        print(f"=== Live Test Setup ===")
+        print(f"{'='*60}")
+        print(f"System: {cpu_count} CPUs, {mem.total / (1024**3):.1f} GB RAM "
+              f"({mem.available / (1024**3):.1f} GB available)")
         print(f"Data directory: {cls.data_dir}")
         print(f"Found {len(cls.ims_files)} IMS files:")
         for f in cls.ims_files:
             print(f"  - {f.name} ({f.stat().st_size / (1024**3):.2f} GB)")
         print(f"Output directory: {cls.output_dir}")
-        print("=" * 50)
+        print("=" * 60)
 
     @classmethod
     def tearDownClass(cls):
@@ -114,7 +263,9 @@ class TestLiveImsToZarr(unittest.TestCase):
             self.skipTest("No IMS files found in data directory")
         
         ims_file = self.ims_files[0]
-        print(f"\nTesting dask array loading with: {ims_file.name}")
+        print(f"\n{'='*60}")
+        print(f"Testing dask array loading with: {ims_file.name}")
+        print(f"{'='*60}")
         
         reader = ImarisReader(str(ims_file))
         
@@ -123,7 +274,8 @@ class TestLiveImsToZarr(unittest.TestCase):
             native_chunks = reader.get_chunks()
             print(f"  Using native chunks: {native_chunks}")
             
-            dask_array = reader.as_dask_array(chunks=native_chunks)
+            with timed_operation("Create dask array", monitor_resources=False):
+                dask_array = reader.as_dask_array(chunks=native_chunks)
             
             print(f"  Dask array shape: {dask_array.shape}")
             print(f"  Dask array dtype: {dask_array.dtype}")
@@ -133,13 +285,14 @@ class TestLiveImsToZarr(unittest.TestCase):
             self.assertEqual(dask_array.ndim, 3)  # ZYX - 3D array
             
             # Compute a small slice to verify data access
-            print(f"  Computing small slice to verify data access...")
-            slice_data = dask_array[0:10, 0:10, 0:10].compute()  # ZYX slicing
+            with timed_operation("Compute 10x10x10 slice", interval=0.5) as stats:
+                slice_data = dask_array[0:10, 0:10, 0:10].compute()  # ZYX slicing
+            
             print(f"  Slice shape: {slice_data.shape}")
             print(f"  Slice dtype: {slice_data.dtype}")
             print(f"  Slice min/max: {slice_data.min()}/{slice_data.max()}")
             
-            print(f"✓ Dask array created and data accessible")
+            print(f"\n✓ Dask array created and data accessible")
 
     def test_imaris_reader_get_dask_pyramid(self):
         """Test generating multi-resolution pyramid"""
@@ -147,7 +300,9 @@ class TestLiveImsToZarr(unittest.TestCase):
             self.skipTest("No IMS files found in data directory")
         
         ims_file = self.ims_files[0]
-        print(f"\nTesting pyramid generation with: {ims_file.name}")
+        print(f"\n{'='*60}")
+        print(f"Testing pyramid generation with: {ims_file.name}")
+        print(f"{'='*60}")
         
         reader = ImarisReader(str(ims_file))
         
@@ -155,7 +310,8 @@ class TestLiveImsToZarr(unittest.TestCase):
             num_levels = 3
             
             print(f"  Generating {num_levels} pyramid levels")
-            pyramid = reader.get_dask_pyramid(num_levels=num_levels)
+            with timed_operation("Generate dask pyramid", monitor_resources=False):
+                pyramid = reader.get_dask_pyramid(num_levels=num_levels)
             
             print(f"  Number of pyramid levels: {len(pyramid)}")
             self.assertEqual(len(pyramid), num_levels)
@@ -171,7 +327,7 @@ class TestLiveImsToZarr(unittest.TestCase):
                         ratio = prev_level.shape[dim] / level.shape[dim]
                         self.assertGreater(ratio, 1.5, f"Level {i} should be downsampled")
             
-            print(f"✓ Pyramid generated successfully")
+            print(f"\n✓ Pyramid generated successfully")
 
     def test_imaris_to_zarr_writer_single_file(self):
         """Test full conversion pipeline: IMS -> Zarr with single file"""
@@ -183,8 +339,10 @@ class TestLiveImsToZarr(unittest.TestCase):
         # The writer appends stack_name to output_path, defaulting to {stem}.ome.zarr
         expected_zarr_path = output_path / f"{ims_file.stem}.ome.zarr"
         
-        print(f"\nTesting full conversion pipeline:")
-        print(f"  Input: {ims_file.name}")
+        print(f"\n{'='*60}")
+        print(f"Testing full conversion pipeline:")
+        print(f"{'='*60}")
+        print(f"  Input: {ims_file.name} ({ims_file.stat().st_size / (1024**3):.2f} GB)")
         print(f"  Output directory: {output_path}")
         print(f"  Expected zarr: {expected_zarr_path}")
         
@@ -195,16 +353,23 @@ class TestLiveImsToZarr(unittest.TestCase):
         print(f"  Pyramid levels: {n_lvls}")
         print(f"  Scale factor: {scale_factor}")
         
-        # Run conversion
-        print(f"  Starting conversion...")
-        imaris_to_zarr_writer(
-            imaris_path=str(ims_file),
-            output_path=str(output_path),
-            n_lvls=n_lvls,
-            scale_factor=scale_factor,
-            voxel_size=None,  # Extract from file
-            compressor_kwargs={"cname": "zstd", "clevel": 5, "shuffle": 1},
-        )
+        # Run conversion with resource monitoring
+        with timed_operation(f"IMS to Zarr conversion ({ims_file.name})", interval=0.5) as stats:
+            imaris_to_zarr_writer(
+                imaris_path=str(ims_file),
+                output_path=str(output_path),
+                n_lvls=n_lvls,
+                scale_factor=scale_factor,
+                voxel_size=None,  # Extract from file
+                compressor_kwargs={"cname": "zstd", "clevel": 5, "shuffle": 1},
+            )
+        
+        # Print throughput stats
+        input_size_gb = ims_file.stat().st_size / (1024**3)
+        if stats.get("elapsed_seconds", 0) > 0:
+            throughput = input_size_gb / stats["elapsed_seconds"]
+            print(f"\n  📈 Throughput: {throughput:.2f} GB/s")
+            print(f"     Peak memory: {stats.get('memory_mb', {}).get('max', 0):.1f} MB")
         
         # Verify output
         self.assertTrue(expected_zarr_path.exists(), f"Output zarr should exist at {expected_zarr_path}")
@@ -220,8 +385,6 @@ class TestLiveImsToZarr(unittest.TestCase):
         self.assertTrue(zattrs_path.exists(), "Zarr attributes should exist")
         print(f"  ✓ Metadata file created: {zattrs_path}")
         
-        print(f"✓ Conversion completed successfully")
-        
         # Print output size
         import subprocess
         result = subprocess.run(
@@ -230,7 +393,10 @@ class TestLiveImsToZarr(unittest.TestCase):
             text=True
         )
         if result.returncode == 0:
-            print(f"  Output size: {result.stdout.strip().split()[0]}")
+            output_size = result.stdout.strip().split()[0]
+            print(f"  Output size: {output_size}")
+        
+        print(f"\n✓ Conversion completed successfully")
 
     def test_imaris_to_zarr_writer_custom_voxel_size(self):
         """Test conversion with custom voxel size override"""
@@ -242,47 +408,61 @@ class TestLiveImsToZarr(unittest.TestCase):
         custom_stack_name = f"{ims_file.stem}_custom_voxel.ome.zarr"
         expected_zarr_path = output_path / custom_stack_name
         
-        print(f"\nTesting conversion with custom voxel size:")
-        print(f"  Input: {ims_file.name}")
+        print(f"\n{'='*60}")
+        print(f"Testing conversion with custom voxel size:")
+        print(f"{'='*60}")
+        print(f"  Input: {ims_file.name} ({ims_file.stat().st_size / (1024**3):.2f} GB)")
         
         custom_voxel_size = [2.0, 1.0, 1.0]  # ZYX in microns
         print(f"  Custom voxel size: {custom_voxel_size}")
         
-        imaris_to_zarr_writer(
-            imaris_path=str(ims_file),
-            output_path=str(output_path),
-            n_lvls=2,
-            scale_factor=[2, 2, 2],
-            voxel_size=custom_voxel_size,
-            stack_name=custom_stack_name,
-        )
+        with timed_operation(f"Custom voxel conversion ({ims_file.name})", interval=0.5) as stats:
+            imaris_to_zarr_writer(
+                imaris_path=str(ims_file),
+                output_path=str(output_path),
+                n_lvls=2,
+                scale_factor=[2, 2, 2],
+                voxel_size=custom_voxel_size,
+                stack_name=custom_stack_name,
+            )
         
         self.assertTrue(expected_zarr_path.exists())
-        print(f"✓ Conversion with custom voxel size completed")
+        print(f"\n✓ Conversion with custom voxel size completed")
 
     def test_process_multiple_files(self):
         """Test processing multiple IMS files (if available)"""
         if len(self.ims_files) < 2:
             self.skipTest("Need at least 2 IMS files for this test")
         
-        print(f"\nTesting batch conversion of {len(self.ims_files)} files:")
+        print(f"\n{'='*60}")
+        print(f"Testing batch conversion of {len(self.ims_files)} files:")
+        print(f"{'='*60}")
         
-        for ims_file in self.ims_files:
-            expected_zarr_path = self.output_dir / f"{ims_file.stem}.ome.zarr"
-            print(f"  Converting {ims_file.name}...")
-            
-            imaris_to_zarr_writer(
-                imaris_path=str(ims_file),
-                output_path=str(self.output_dir),
-                n_lvls=2,
-                scale_factor=[2, 2, 2],
-                voxel_size=None,
-            )
-            
-            self.assertTrue(expected_zarr_path.exists())
-            print(f"    ✓ Completed: {expected_zarr_path}")
+        total_size_gb = sum(f.stat().st_size for f in self.ims_files) / (1024**3)
+        print(f"  Total input size: {total_size_gb:.2f} GB")
         
-        print(f"✓ All {len(self.ims_files)} files converted successfully")
+        with timed_operation(f"Batch conversion ({len(self.ims_files)} files)", interval=0.5) as total_stats:
+            for i, ims_file in enumerate(self.ims_files):
+                expected_zarr_path = self.output_dir / f"{ims_file.stem}.ome.zarr"
+                
+                with timed_operation(f"File {i+1}/{len(self.ims_files)}: {ims_file.name}", interval=0.5):
+                    imaris_to_zarr_writer(
+                        imaris_path=str(ims_file),
+                        output_path=str(self.output_dir),
+                        n_lvls=2,
+                        scale_factor=[2, 2, 2],
+                        voxel_size=None,
+                    )
+                
+                self.assertTrue(expected_zarr_path.exists())
+                print(f"    ✓ Completed: {expected_zarr_path}")
+        
+        # Print overall throughput
+        if total_stats.get("elapsed_seconds", 0) > 0:
+            throughput = total_size_gb / total_stats["elapsed_seconds"]
+            print(f"\n  📈 Overall throughput: {throughput:.2f} GB/s")
+        
+        print(f"\n✓ All {len(self.ims_files)} files converted successfully")
 
 
 if __name__ == "__main__":
