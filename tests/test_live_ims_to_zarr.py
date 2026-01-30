@@ -16,7 +16,6 @@ import threading
 import psutil
 
 from aind_exaspim_data_transformation.compress.imaris_to_zarr import (
-    DataReaderFactory,
     ImarisReader,
     imaris_to_zarr_writer,
 )
@@ -194,17 +193,18 @@ class TestLiveImsToZarr(unittest.TestCase):
             print(f"\nCleaning up test output directory: {cls.output_dir}")
             shutil.rmtree(cls.output_dir)
 
-    def test_data_reader_factory_creates_imaris_reader(self):
-        """Test that DataReaderFactory correctly creates ImarisReader for .ims files"""
+    def test_imaris_reader_opens_ims_file(self):
+        """Test that ImarisReader correctly opens .ims files"""
         if not self.ims_files:
             self.skipTest("No IMS files found in data directory")
         
         ims_file = self.ims_files[0]
-        print(f"\nTesting DataReaderFactory with: {ims_file.name}")
+        print(f"\nTesting ImarisReader with: {ims_file.name}")
         
-        reader = DataReaderFactory.create(str(ims_file))
+        reader = ImarisReader(str(ims_file))
         
         self.assertIsInstance(reader, ImarisReader)
+        reader.close()
         print(f"✓ Successfully created ImarisReader")
 
     def test_imaris_reader_open_and_properties(self):
