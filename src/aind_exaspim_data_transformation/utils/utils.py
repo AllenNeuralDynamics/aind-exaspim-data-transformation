@@ -12,11 +12,10 @@ from typing import List, Optional
 
 import boto3
 import numpy as np
-from czifile.czifile import create_output
 from natsort import natsorted
 from numpy.typing import ArrayLike
 
-from aind_hcr_data_transformation.models import PathLike
+from aind_exaspim_data_transformation.models import PathLike
 
 
 def add_leading_dim(data: ArrayLike) -> ArrayLike:
@@ -282,119 +281,6 @@ def parallel_reader(
     except ValueError as e:
         raise ValueError(f"Error writing subblock {idx + start_slice}: {e}")
 
-
-def read_slices_czi(
-    czi_stream,
-    subblock_directory: List,
-    start_slice: int,
-    end_slice: int,
-    slice_axis: Optional[str] = "z",
-    resize: Optional[bool] = True,
-    order: Optional[int] = 0,
-    out: Optional[List[int]] = None,
-    max_workers: Optional[int] = None,
-):
-    """
-    Reads chunked data from CZI files. From AIND-Zeiss
-    the data is being chunked in a slice basis. Therefore,
-    we assume the slice axis to be 'z'.
-
-    Parameters
-    ----------
-    czi_stream
-        Opened CZI file decriptor.
-
-    subblock_directory: List
-        List of subblock directories. These must be ordered.
-
-    start_slice: int
-        Start slice from where the data will be pulled.
-
-    end_slice: int
-        End slice from where the data will be pulled.
-
-    slice_axis: Optional[str] = 'z'
-        Axis in which start and end slice parameters will
-        be applied.
-        Default: 'z'
-
-    resize: Optional[bool] = True
-        If we want to resize the tile from the CZI file.
-        Default: True
-
-    order: Optional[int] = 0
-        Interpolation order
-        Default: 0
-
-    out: Optional[List[int]] = None
-        Out shape of the final array
-        Default: None
-
-    max_workers: Optional[int] = None
-        Number of workers that will be pulling data.
-        Default: None
-
-    Returns
-    -------
-    np.ndarray
-        Numpy array with the pulled data
-    """
-
-    shape, dtype, axes = (
-        czi_stream.shape,
-        czi_stream.dtype,
-        list(czi_stream.axes.lower()),
-    )
-    nominal_start = np.array(czi_stream.start)
-
-    len_dir = len(subblock_directory)
-
-    validate_slices(start_slice, end_slice, len_dir)
-
-    ax_index = axes.index(slice_axis.lower())
-    new_shape = list(shape)
-    new_shape[ax_index] = end_slice - start_slice
-    new_shape[axes.index("c")] = 1  # Assume 1 channel per CZI
-
-    out = create_output(out, new_shape, dtype)
-    max_workers = max_workers or min(
-        multiprocessing.cpu_count() // 2, end_slice - start_slice
-    )
-
-    selected_entries = subblock_directory[start_slice:end_slice]
-
-    if max_workers > 1 and end_slice - start_slice > 1:
-        czi_stream._fh.lock = True
-        with ThreadPoolExecutor(max_workers) as executor:
-            executor.map(
-                lambda args: parallel_reader(
-                    args,
-                    out,
-                    nominal_start,
-                    start_slice,
-                    ax_index,
-                    resize,
-                    order,
-                ),
-                enumerate(selected_entries),
-            )
-        czi_stream._fh.lock = None
-    else:
-        for idx, entry in enumerate(selected_entries):
-            parallel_reader(
-                (idx, entry),
-                out,
-                nominal_start,
-                start_slice,
-                ax_index,
-                resize,
-                order,
-            )
-
-    if hasattr(out, "flush"):
-        out.flush()
-
-    return np.squeeze(out)
 
 
 def generate_jumps(n: int, jump_size: Optional[int] = 128):
