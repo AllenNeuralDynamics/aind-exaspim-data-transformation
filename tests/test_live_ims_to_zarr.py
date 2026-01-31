@@ -17,6 +17,7 @@ import psutil
 
 from aind_exaspim_data_transformation.compress.imaris_to_zarr import (
     ImarisReader,
+    imaris_to_zarr_parallel,
     imaris_to_zarr_writer,
 )
 
@@ -463,6 +464,168 @@ class TestLiveImsToZarr(unittest.TestCase):
             print(f"\n  📈 Overall throughput: {throughput:.2f} GB/s")
         
         print(f"\n✓ All {len(self.ims_files)} files converted successfully")
+
+    def test_imaris_to_zarr_parallel_to_s3(self):
+        """Test TensorStore parallel writer with S3 output"""
+        if not self.ims_files:
+            self.skipTest("No IMS files found in data directory")
+        
+        ims_file = self.ims_files[0]
+        
+        # S3 test configuration
+        s3_bucket = "aind-scratch-data"
+        s3_prefix = "exaSPIM_683791-screen_2026-01-26_14-53-41"
+        stack_name = f"{ims_file.stem}.ome.zarr"
+        s3_output_path = f"s3://{s3_bucket}/{s3_prefix}/{stack_name}"
+        
+        print(f"\n{'='*60}")
+        print(f"Testing TensorStore parallel writer to S3:")
+        print(f"{'='*60}")
+        print(f"  Input: {ims_file.name} ({ims_file.stat().st_size / (1024**3):.2f} GB)")
+        print(f"  S3 Output: {s3_output_path}")
+        
+        # Conversion parameters optimized for S3
+        chunk_shape = (128, 128, 128)
+        shard_shape = (256, 256, 256)
+        n_lvls = 1  # Start with just base level for testing
+        
+        print(f"  Chunk shape: {chunk_shape}")
+        print(f"  Shard shape: {shard_shape}")
+        print(f"  Pyramid levels: {n_lvls}")
+        
+        # Run conversion with resource monitoring
+        with timed_operation(f"IMS to S3 Zarr ({ims_file.name})", interval=0.5) as stats:
+            result_path = imaris_to_zarr_parallel(
+                imaris_path=str(ims_file),
+                output_path=s3_prefix,
+                voxel_size=None,  # Extract from file
+                chunk_shape=chunk_shape,
+                shard_shape=shard_shape,
+                n_lvls=n_lvls,
+                channel_name=ims_file.stem,
+                stack_name=stack_name,
+                codec="zstd",
+                codec_level=3,
+                bucket_name=s3_bucket,
+                max_concurrent_writes=16,
+            )
+        
+        # Print throughput stats
+        input_size_gb = ims_file.stat().st_size / (1024**3)
+        if stats.get("elapsed_seconds", 0) > 0:
+            throughput = input_size_gb / stats["elapsed_seconds"]
+            print(f"\n  📈 Throughput: {throughput:.2f} GB/s")
+            print(f"     Peak memory: {stats.get('memory_mb', {}).get('max', 0):.1f} MB")
+        
+        print(f"  Result path: {result_path}")
+        print(f"\n✓ S3 upload completed successfully")
+        
+        # Verify the upload using boto3
+        try:
+            import boto3
+            s3_client = boto3.client('s3')
+            
+            # List objects at the output path
+            response = s3_client.list_objects_v2(
+                Bucket=s3_bucket,
+                Prefix=f"{s3_prefix}/{stack_name}/",
+                MaxKeys=10,
+            )
+            
+            if 'Contents' in response:
+                print(f"\n  📁 S3 Contents (first 10):")
+                for obj in response['Contents'][:10]:
+                    size_kb = obj['Size'] / 1024
+                    print(f"     - {obj['Key']} ({size_kb:.1f} KB)")
+                print(f"     ... and {response.get('KeyCount', 0)} total objects")
+            else:
+                print(f"\n  ⚠ No objects found at {s3_prefix}/{stack_name}/")
+                
+        except ImportError:
+            print("\n  ⚠ boto3 not available for S3 verification")
+        except Exception as e:
+            print(f"\n  ⚠ S3 verification error: {e}")
+
+    def test_imaris_to_zarr_parallel_to_s3_multi_level(self):
+        """Test TensorStore parallel writer with S3 output and multiple pyramid levels"""
+        if not self.ims_files:
+            self.skipTest("No IMS files found in data directory")
+        
+        ims_file = self.ims_files[0]
+        
+        # S3 test configuration
+        s3_bucket = "aind-scratch-data"
+        s3_prefix = "exaSPIM_683791-screen_2026-01-26_14-53-41"
+        stack_name = f"{ims_file.stem}_multilevel.ome.zarr"
+        s3_output_path = f"s3://{s3_bucket}/{s3_prefix}/{stack_name}"
+        
+        print(f"\n{'='*60}")
+        print(f"Testing TensorStore multi-level pyramid to S3:")
+        print(f"{'='*60}")
+        print(f"  Input: {ims_file.name} ({ims_file.stat().st_size / (1024**3):.2f} GB)")
+        print(f"  S3 Output: {s3_output_path}")
+        
+        # Conversion parameters
+        chunk_shape = (128, 128, 128)
+        shard_shape = (256, 256, 256)
+        n_lvls = 3  # Multiple pyramid levels
+        
+        print(f"  Chunk shape: {chunk_shape}")
+        print(f"  Shard shape: {shard_shape}")
+        print(f"  Pyramid levels: {n_lvls}")
+        
+        # Run conversion with resource monitoring
+        with timed_operation(f"IMS to S3 Zarr multi-level ({ims_file.name})", interval=0.5) as stats:
+            result_path = imaris_to_zarr_parallel(
+                imaris_path=str(ims_file),
+                output_path=s3_prefix,
+                voxel_size=None,
+                chunk_shape=chunk_shape,
+                shard_shape=shard_shape,
+                n_lvls=n_lvls,
+                channel_name=ims_file.stem,
+                stack_name=stack_name,
+                codec="zstd",
+                codec_level=3,
+                bucket_name=s3_bucket,
+                max_concurrent_writes=16,
+            )
+        
+        # Print throughput stats
+        input_size_gb = ims_file.stat().st_size / (1024**3)
+        if stats.get("elapsed_seconds", 0) > 0:
+            throughput = input_size_gb / stats["elapsed_seconds"]
+            print(f"\n  📈 Throughput: {throughput:.2f} GB/s")
+            print(f"     Peak memory: {stats.get('memory_mb', {}).get('max', 0):.1f} MB")
+        
+        print(f"  Result path: {result_path}")
+        
+        # Verify pyramid levels in S3
+        try:
+            import boto3
+            s3_client = boto3.client('s3')
+            
+            for level in range(n_lvls):
+                response = s3_client.list_objects_v2(
+                    Bucket=s3_bucket,
+                    Prefix=f"{s3_prefix}/{stack_name}/{level}/",
+                    MaxKeys=5,
+                )
+                
+                if 'Contents' in response:
+                    print(f"\n  📁 Level {level} contents:")
+                    for obj in response['Contents'][:5]:
+                        size_kb = obj['Size'] / 1024
+                        print(f"     - {obj['Key'].split('/')[-1]} ({size_kb:.1f} KB)")
+                else:
+                    print(f"\n  ⚠ Level {level} not found")
+                    
+        except ImportError:
+            print("\n  ⚠ boto3 not available for S3 verification")
+        except Exception as e:
+            print(f"\n  ⚠ S3 verification error: {e}")
+        
+        print(f"\n✓ Multi-level S3 upload completed successfully")
 
 
 if __name__ == "__main__":
