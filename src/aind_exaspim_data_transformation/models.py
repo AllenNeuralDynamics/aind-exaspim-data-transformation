@@ -40,9 +40,9 @@ class ImarisJobSettings(BasicJobSettings):
         ...,
         description=("Which partition of stacks to process. "),
     )
-    compressor_name: CompressorName = Field(
+    compressor_name: Optional[CompressorName] = Field(
         default=CompressorName.BLOSC,
-        description="Type of compressor to use.",
+        description="Type of compressor to use. Set to None to disable compression.",
         title="Compressor Name.",
     )
     # It will be safer if these kwargs fields were objects with known schemas
@@ -87,4 +87,12 @@ class ImarisJobSettings(BasicJobSettings):
         default=1,
         description="Batch size to execute concurrent tensorstore tasks",
         title="Tensorstore batch size",
+    )
+    use_tensorstore: bool = Field(
+        default=False,
+        description=(
+            "Use TensorStore-based parallel writer for Zarr v3 with sharding. "
+            "Enables horizontal scaling for distributed execution."
+        ),
+        title="Use TensorStore",
     )
