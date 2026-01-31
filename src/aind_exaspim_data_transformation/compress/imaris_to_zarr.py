@@ -633,7 +633,7 @@ def create_tensorstore_spec(
 
     spec = {
         "driver": "zarr3",
-        "kvstore": {"driver": "file", "path": path} if not is_s3 else _s3_kvstore(path),
+        "kvstore": _s3_kvstore(path),
         "metadata": {
             "shape": list(shape),
             "chunk_grid": {
@@ -651,7 +651,7 @@ def create_tensorstore_spec(
     return spec
 
 
-def _s3_kvstore(s3_url: str) -> Dict[str, Any]:
+def _s3_kvstore(s3_url: str, region: str = "us-west-2") -> Dict[str, Any]:
     """
     Create a TensorStore S3 kvstore configuration from an S3 URL.
 
@@ -659,6 +659,8 @@ def _s3_kvstore(s3_url: str) -> Dict[str, Any]:
     ----------
     s3_url : str
         S3 URL in format "s3://bucket/path"
+    region : str
+        AWS region for the S3 bucket. Default is "us-west-2".
 
     Returns
     -------
@@ -677,6 +679,8 @@ def _s3_kvstore(s3_url: str) -> Dict[str, Any]:
         "driver": "s3",
         "bucket": bucket,
         "path": path,
+        "aws_region": region,
+        "aws_credentials": {"type": "default"},
     }
 
 
