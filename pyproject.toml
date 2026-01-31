@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aind-exaspim-data-transformation"
-description = "Generated from aind-library-template"
-license = {text = "MIT"}
+description = "An imaris to zarr data transformation tool for ExaSPIM data. Designed to be used in aind-data-transfer-service."
+license = "MIT"
 requires-python = ">=3.10"
 authors = [
     {name = "Allen Institute for Neural Dynamics"}
@@ -17,7 +17,21 @@ readme = "README.md"
 dynamic = ["version"]
 
 dependencies = [
+    "dask>=2024.0.0",
+    "h5py>=3.0.0",
+    "hdf5plugin>=4.0.0",
+    "numpy>=1.20.0",
+    "zarr>=2.13.0,<2.18.0",
+    "ome-zarr>=0.8.0",
+    "numcodecs==0.15.1",
+    "aind-data-transformation>=0.1.0",
+    "packaging>=21.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0"
 ]
+
+[tool.setuptools]
+license-files = []
 
 [dependency-groups]
 dev = [
