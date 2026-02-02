@@ -264,6 +264,8 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
                     chunk_shape=tuple(self.job_settings.chunk_size),
                     shard_shape=tuple(self.job_settings.shard_size),
                     n_lvls=self.job_settings.downsample_levels,
+                    scale_factor=tuple(self.job_settings.scale_factor),
+                    downsample_mode=self.job_settings.downsample_mode,
                     channel_name=stack_name,
                     stack_name=f"{stack_name}.ome.zarr",
                     bucket_name=bucket_name,
