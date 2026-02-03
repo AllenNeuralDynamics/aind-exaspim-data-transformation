@@ -856,6 +856,59 @@ class TestLiveDownsamplePyramid(unittest.TestCase):
         
         self.assertTrue(result_path.startswith("s3://"))
 
+    # @unittest.skip("S3 write test - run manually when needed")
+    def test_imaris_to_zarr_translate_pyramid_s3(self):
+        """Test translating existing Imaris pyramid levels to S3.
+        
+        This test uses the new translate function which reads pre-computed
+        pyramid levels from the Imaris file instead of re-downsampling.
+        This should be significantly faster.
+        """
+        from aind_exaspim_data_transformation.compress.imaris_to_zarr import (
+            imaris_to_zarr_translate_pyramid,
+        )
+        
+        if not self.ims_files:
+            self.skipTest("No IMS files found in data directory")
+        
+        ims_file = self.ims_files[0]
+        stack_name = f"{ims_file.stem}_translate_test.ome.zarr"
+        s3_output_path = f"s3://{self.s3_bucket}/{self.s3_prefix}/{stack_name}"
+        
+        print(f"\n{'='*60}")
+        print(f"Testing S3 pyramid TRANSLATION (no re-downsample): {ims_file.name}")
+        print(f"Output: {s3_output_path}")
+        print(f"{'='*60}")
+        
+        with timed_operation(
+            f"S3 translate pyramid (all levels): {ims_file.name}",
+            monitor_resources=True,
+            interval=0.5,
+        ) as stats:
+            result_path = imaris_to_zarr_translate_pyramid(
+                imaris_path=str(ims_file),
+                output_path=self.s3_prefix,
+                chunk_shape=(128, 128, 128),
+                shard_shape=(512, 512, 512),
+                n_lvls=None,  # Use all available levels from Imaris
+                stack_name=stack_name,
+                codec="zstd",
+                codec_level=3,
+                bucket_name=self.s3_bucket,
+                max_concurrent_writes=16,
+            )
+        
+        print(f"  Output path: {result_path}")
+        
+        # Print summary
+        if "memory_mb" in stats:
+            print(f"\n  📈 Performance Summary:")
+            print(f"     Peak memory: {stats['memory_mb']['max']:.1f} MB")
+            print(f"     Avg memory: {stats['memory_mb']['avg']:.1f} MB")
+            print(f"     Total time: {stats['elapsed_seconds']:.2f}s")
+        
+        self.assertTrue(result_path.startswith("s3://"))
+
 
 if __name__ == "__main__":
     unittest.main()

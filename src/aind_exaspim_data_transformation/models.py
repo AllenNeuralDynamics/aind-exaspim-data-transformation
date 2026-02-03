@@ -96,3 +96,13 @@ class ImarisJobSettings(BasicJobSettings):
         ),
         title="Use TensorStore",
     )
+    translate_imaris_pyramid: bool = Field(
+        default=True,
+        description=(
+            "If True, directly translate existing Imaris pyramid levels to Zarr "
+            "instead of re-computing downsampled levels. This is faster and uses "
+            "less memory. If False, pyramid levels are re-computed using the "
+            "downsample_mode setting. Only applies when use_tensorstore=True."
+        ),
+        title="Translate Imaris Pyramid",
+    )

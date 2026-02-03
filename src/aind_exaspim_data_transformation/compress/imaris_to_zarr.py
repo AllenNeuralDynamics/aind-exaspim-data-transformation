@@ -1541,3 +1541,289 @@ def _write_zarr_metadata(
         with open(metadata_path, "w") as f:
             json.dump(metadata_dict, f, indent=2)
 
+
+def imaris_to_zarr_translate_pyramid(
+    imaris_path: str,
+    output_path: str,
+    voxel_size: Optional[List[float]] = None,
+    chunk_shape: Optional[Tuple[int, int, int]] = None,
+    shard_shape: Optional[Tuple[int, int, int]] = None,
+    n_lvls: Optional[int] = None,
+    channel_name: Optional[str] = None,
+    stack_name: Optional[str] = None,
+    codec: str = "zstd",
+    codec_level: int = 3,
+    bucket_name: Optional[str] = None,
+    max_concurrent_writes: int = 16,
+) -> str:
+    """
+    Convert an Imaris file to OME-Zarr v3 by directly translating existing pyramids.
+
+    This function reads the pre-computed pyramid levels from an Imaris file and
+    writes them directly to Zarr format. This is significantly faster than
+    re-computing downsampled levels, as Imaris files typically contain multiple
+    resolution levels that were pre-computed by the acquisition software.
+
+    The output is a 5D OME-NGFF compliant Zarr store with shape (T, C, Z, Y, X).
+
+    Parameters
+    ----------
+    imaris_path : str
+        Path to the input Imaris file (.ims or .h5)
+    output_path : str
+        Directory where the output OME-Zarr will be written
+    voxel_size : Optional[List[float]]
+        Voxel size in [Z, Y, X] order in micrometers.
+        If None, extracted from Imaris metadata.
+    chunk_shape : Optional[Tuple[int, int, int]]
+        Chunk size for zarr arrays in (Z, Y, X) order.
+        Default is (128, 128, 128). Will be converted to 5D internally.
+    shard_shape : Optional[Tuple[int, int, int]]
+        Shard size for Zarr v3 sharding in (Z, Y, X) order.
+        Default is (256, 256, 256). Will be converted to 5D internally.
+    n_lvls : Optional[int]
+        Number of pyramid levels to write. If None, writes all available
+        levels from the Imaris file.
+    channel_name : Optional[str]
+        Name for the channel in metadata. If None, uses stack name.
+    stack_name : Optional[str]
+        Name for the output zarr store (e.g., "image.ome.zarr").
+        If None, derives from input filename.
+    codec : str
+        Compression codec. Default is "zstd".
+    codec_level : int
+        Compression level. Default is 3.
+    bucket_name : Optional[str]
+        S3 bucket name for cloud storage. If None, writes locally.
+    max_concurrent_writes : int
+        Maximum number of concurrent block writes. Default is 16.
+
+    Returns
+    -------
+    str
+        Path to the created OME-Zarr store
+
+    Notes
+    -----
+    This function is preferred over `imaris_to_zarr_parallel` when:
+    - The Imaris file already contains pre-computed pyramid levels
+    - Speed is important (avoids re-computing downsampled data)
+    - You want to preserve the original pyramid structure
+
+    The function automatically detects available resolution levels in the
+    Imaris file and translates each one to the corresponding Zarr level.
+
+    Examples
+    --------
+    >>> imaris_to_zarr_translate_pyramid(
+    ...     imaris_path="input.ims",
+    ...     output_path="/data/output",
+    ...     chunk_shape=(128, 128, 128),
+    ...     shard_shape=(512, 512, 512),
+    ... )
+    '/data/output/input.ome.zarr'
+    """
+    logger.info(
+        f"Starting Imaris pyramid translation to Zarr: {imaris_path}"
+    )
+
+    # Set defaults
+    if chunk_shape is None:
+        chunk_shape = (128, 128, 128)
+    if shard_shape is None:
+        shard_shape = (256, 256, 256)
+    if stack_name is None:
+        stack_name = Path(imaris_path).stem + ".ome.zarr"
+
+    # Convert 3D shapes to 5D (T, C, Z, Y, X)
+    chunk_shape_5d = (1, 1) + tuple(chunk_shape)
+    shard_shape_5d = (1, 1) + tuple(shard_shape)
+
+    def _data_path(level: int) -> str:
+        """Build the HDF5 data path for a resolution level."""
+        return f"/DataSet/ResolutionLevel {level}/TimePoint 0/Channel 0/Data"
+
+    def _count_imaris_levels(reader: ImarisReader) -> int:
+        """Count the number of resolution levels in the Imaris file."""
+        count = 0
+        with h5py.File(reader.filepath, "r") as f:
+            dataset = f["DataSet"]
+            for key in dataset.keys():
+                if "ResolutionLevel" in key:
+                    count += 1
+        return count
+
+    with ImarisReader(imaris_path) as reader:
+        # Get voxel size from file if not provided
+        if voxel_size is None:
+            voxel_size, unit = reader.get_voxel_size()
+            logger.info(f"Extracted voxel size from Imaris: {voxel_size} {unit}")
+        else:
+            logger.info(f"Using provided voxel size: {voxel_size}")
+
+        # Count available pyramid levels in Imaris file
+        available_levels = _count_imaris_levels(reader)
+        logger.info(f"Imaris file contains {available_levels} resolution levels")
+
+        # Determine how many levels to write
+        if n_lvls is None:
+            n_lvls = available_levels
+        else:
+            n_lvls = min(n_lvls, available_levels)
+
+        logger.info(f"Will translate {n_lvls} pyramid levels")
+
+        # Get shape and dtype from base resolution
+        base_path = _data_path(0)
+        shape_3d = reader.get_shape(base_path)
+        dtype = reader.get_dtype(base_path)
+        native_chunks = reader.get_chunks(base_path)
+
+        # Create 5D shape (T, C, Z, Y, X)
+        shape_5d = (1, 1) + tuple(shape_3d)
+
+        logger.info(f"Base image shape (Z, Y, X): {shape_3d}")
+        logger.info(f"Base image shape 5D (T, C, Z, Y, X): {shape_5d}")
+        logger.info(f"Native HDF5 chunks: {native_chunks}")
+        logger.info(f"Output chunk shape (5D): {chunk_shape_5d}")
+        logger.info(f"Shard shape (5D): {shard_shape_5d}")
+
+        # Prepare output path
+        output_zarr_path = Path(output_path) / stack_name
+        is_s3 = bucket_name is not None
+
+        if is_s3:
+            store_path = f"s3://{bucket_name}/{output_zarr_path}"
+            dataset_path = str(output_zarr_path)
+            logger.info(f"Writing to S3: {store_path}")
+        else:
+            store_path = str(output_zarr_path)
+            dataset_path = store_path
+            output_zarr_path.mkdir(parents=True, exist_ok=True)
+            logger.info(f"Writing to local: {store_path}")
+
+        # Track shapes for each level (needed for metadata)
+        level_shapes = []
+
+        # =====================================================================
+        # Translate each Imaris resolution level to Zarr
+        # =====================================================================
+        for level in range(n_lvls):
+            imaris_data_path = _data_path(level)
+
+            # Get shape for this level
+            level_shape_3d = reader.get_shape(imaris_data_path)
+            level_shape_5d = (1, 1) + tuple(level_shape_3d)
+            level_shapes.append(level_shape_5d)
+            level_chunks = reader.get_chunks(imaris_data_path)
+
+            logger.info(
+                f"Translating level {level}: "
+                f"shape={level_shape_5d}, native_chunks={level_chunks}"
+            )
+
+            # Create TensorStore spec for this level
+            level_spec = create_scale_spec(
+                output_path=dataset_path,
+                data_shape=level_shape_5d,
+                data_dtype=str(dtype),
+                shard_shape=shard_shape_5d,
+                chunk_shape=chunk_shape_5d,
+                scale=level,
+                codec=codec,
+                codec_level=codec_level,
+                bucket_name=bucket_name,
+            )
+
+            # Open TensorStore for writing
+            store = ts.open(level_spec).result()
+
+            # Get dask array for this level (using native chunks for reading)
+            dask_array = reader.as_dask_array(
+                data_path=imaris_data_path,
+                chunks=level_chunks,
+            )
+
+            # Write blocks aligned to shard boundaries
+            write_shape_3d = shard_shape if shard_shape else chunk_shape
+            pending_writes: List[ts.Future] = []
+
+            for block_slices_3d in iter_block_aligned_slices(
+                level_shape_3d, write_shape_3d
+            ):
+                # Read block from source (this triggers dask computation)
+                block_data_3d = dask_array[block_slices_3d].compute()
+
+                # Expand to 5D: (Z, Y, X) -> (1, 1, Z, Y, X)
+                block_data_5d = block_data_3d[np.newaxis, np.newaxis, ...]
+
+                # Create 5D slices for writing
+                block_slices_5d = (
+                    slice(0, 1),  # T
+                    slice(0, 1),  # C
+                ) + block_slices_3d
+
+                # Write block to destination
+                future = write_block_to_tensorstore(
+                    store, block_data_5d, block_slices_5d
+                )
+                pending_writes.append(future)
+
+                # Limit concurrent writes
+                if len(pending_writes) >= max_concurrent_writes:
+                    for f in pending_writes:
+                        f.result()
+                    pending_writes.clear()
+
+            # Wait for remaining writes
+            for f in pending_writes:
+                f.result()
+
+            logger.info(f"Completed level {level}")
+
+    # =========================================================================
+    # Compute scale factors from actual level shapes
+    # =========================================================================
+    # Compute the scale factors between consecutive levels
+    scale_factors_per_level = []
+    for i in range(1, len(level_shapes)):
+        prev_shape = level_shapes[i - 1]
+        curr_shape = level_shapes[i]
+        # Calculate factors for Z, Y, X (indices 2, 3, 4)
+        factors = tuple(
+            round(prev_shape[j] / curr_shape[j]) if curr_shape[j] > 0 else 1
+            for j in range(2, 5)
+        )
+        scale_factors_per_level.append(factors)
+
+    # Use the first scale factor as representative (they should all be similar)
+    if scale_factors_per_level:
+        representative_factor = scale_factors_per_level[0]
+    else:
+        representative_factor = (2, 2, 2)
+
+    logger.info(f"Detected scale factors: {scale_factors_per_level}")
+    logger.info(f"Using representative factor: {representative_factor}")
+
+    # =========================================================================
+    # Write OME-NGFF metadata
+    # =========================================================================
+    metadata_dict = write_ome_ngff_metadata(
+        arr_shape=list(shape_5d),
+        chunk_size=list(chunk_shape_5d),
+        image_name=channel_name or stack_name,
+        n_lvls=n_lvls,
+        scale_factors=representative_factor,
+        voxel_size=tuple(voxel_size),
+        channel_names=[channel_name or stack_name],
+    )
+
+    # Write metadata to zarr.json
+    _write_zarr_metadata(store_path, metadata_dict, is_s3)
+
+    logger.info(
+        f"Successfully translated {stack_name} with {n_lvls} levels "
+        f"from Imaris pyramid"
+    )
+    return store_path
+

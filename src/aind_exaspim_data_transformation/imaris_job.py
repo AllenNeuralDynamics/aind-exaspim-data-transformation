@@ -15,6 +15,7 @@ from packaging import version
 from aind_exaspim_data_transformation.compress.imaris_to_zarr import (
     ImarisReader,
     imaris_to_zarr_parallel,
+    imaris_to_zarr_translate_pyramid,
     imaris_to_zarr_writer,
 )
 from aind_exaspim_data_transformation.models import (
@@ -256,21 +257,44 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
 
             if self.job_settings.use_tensorstore:
                 # Use TensorStore-based parallel writer (Zarr v3 with sharding)
-                logging.info("Using TensorStore parallel writer")
-                imaris_to_zarr_parallel(
-                    imaris_path=str(stack),
-                    output_path=str(output_path),
-                    voxel_size=voxel_size_zyx,
-                    chunk_shape=tuple(self.job_settings.chunk_size),
-                    shard_shape=tuple(self.job_settings.shard_size),
-                    n_lvls=self.job_settings.downsample_levels,
-                    scale_factor=tuple(self.job_settings.scale_factor),
-                    downsample_mode=self.job_settings.downsample_mode,
-                    channel_name=stack_name,
-                    stack_name=f"{stack_name}.ome.zarr",
-                    bucket_name=bucket_name,
-                    max_concurrent_writes=self.job_settings.tensorstore_batch_size,
-                )
+                if self.job_settings.translate_imaris_pyramid:
+                    # Translate existing Imaris pyramid levels (faster)
+                    logging.info(
+                        "Using TensorStore pyramid translator "
+                        "(translating existing Imaris pyramids)"
+                    )
+                    imaris_to_zarr_translate_pyramid(
+                        imaris_path=str(stack),
+                        output_path=str(output_path),
+                        voxel_size=voxel_size_zyx,
+                        chunk_shape=tuple(self.job_settings.chunk_size),
+                        shard_shape=tuple(self.job_settings.shard_size),
+                        n_lvls=self.job_settings.downsample_levels,
+                        channel_name=stack_name,
+                        stack_name=f"{stack_name}.ome.zarr",
+                        bucket_name=bucket_name,
+                        max_concurrent_writes=self.job_settings.tensorstore_batch_size,
+                    )
+                else:
+                    # Re-compute pyramid levels using TensorStore downsample
+                    logging.info(
+                        "Using TensorStore parallel writer "
+                        "(re-computing pyramid levels)"
+                    )
+                    imaris_to_zarr_parallel(
+                        imaris_path=str(stack),
+                        output_path=str(output_path),
+                        voxel_size=voxel_size_zyx,
+                        chunk_shape=tuple(self.job_settings.chunk_size),
+                        shard_shape=tuple(self.job_settings.shard_size),
+                        n_lvls=self.job_settings.downsample_levels,
+                        scale_factor=tuple(self.job_settings.scale_factor),
+                        downsample_mode=self.job_settings.downsample_mode,
+                        channel_name=stack_name,
+                        stack_name=f"{stack_name}.ome.zarr",
+                        bucket_name=bucket_name,
+                        max_concurrent_writes=self.job_settings.tensorstore_batch_size,
+                    )
             else:
                 # Use standard dask-based writer
                 imaris_to_zarr_writer(
