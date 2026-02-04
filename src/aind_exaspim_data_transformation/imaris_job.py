@@ -50,13 +50,13 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
         """
         all_stack_paths = []
         total_counter = 0
-        
+
         # Look for .ims files (Imaris format)
         for p in Path(self.job_settings.input_source).glob("**/*.ims"):
             if p.is_file():
                 total_counter += 1
                 all_stack_paths.append(p)
-        
+
         # Also support .h5 files as fallback
         if total_counter == 0:
             logging.info("No .ims files found, searching for .h5 files...")
@@ -77,7 +77,7 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
     def _get_voxel_resolution(acquisition_path: Path) -> List[float]:
         """
         Get the voxel resolution from an acquisition.json file.
-        
+
         This method is kept for backward compatibility with datasets that
         have acquisition.json. For Imaris files, voxel size can be extracted
         directly from the file metadata.
@@ -118,12 +118,12 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
     def _get_voxel_size_from_imaris(imaris_path: Path) -> List[float]:
         """
         Extract voxel size directly from an Imaris file.
-        
+
         Parameters
         ----------
         imaris_path : Path
             Path to the Imaris file
-            
+
         Returns
         -------
         List[float]
@@ -188,7 +188,7 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
     def _write_stacks(self, stacks_to_process: List) -> None:
         """
         Write a list of Imaris stacks to OME-Zarr format.
-        
+
         Parameters
         ----------
         stacks_to_process : List
@@ -211,7 +211,7 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
         acquisition_path = self.job_settings.input_source.joinpath(
             "acquisition.json"
         )
-        
+
         voxel_size_zyx = None
         if acquisition_path.exists():
             try:
@@ -320,7 +320,9 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
         )
 
         if not derivatives_path.exists():
-            logging.info(f"No derivatives folder found at {derivatives_path}, skipping upload.")
+            logging.info(
+                f"No derivatives folder found at {derivatives_path}, skipping upload."
+            )
             return
 
         if self.job_settings.s3_location is not None:

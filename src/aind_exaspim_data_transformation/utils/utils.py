@@ -282,7 +282,6 @@ def parallel_reader(
         raise ValueError(f"Error writing subblock {idx + start_slice}: {e}")
 
 
-
 def generate_jumps(n: int, jump_size: Optional[int] = 128):
     """
     Generates jumps for indexing.

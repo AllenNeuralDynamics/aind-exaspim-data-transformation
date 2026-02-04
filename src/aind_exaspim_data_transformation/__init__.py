@@ -1,4 +1,5 @@
 """Init package"""
+
 __version__ = "0.0.0"
 __authors__ = ["Carson Berry"]
 __author_emails__ = [
@@ -6,7 +7,9 @@ __author_emails__ = [
 ]
 __license__ = "MIT"
 __description__ = "Repository for transforming IMS data to zarr"
-__url__ = "https://github.com/AllenNeuralDynamics/aind-exaspim-data-transformation"
+__url__ = (
+    "https://github.com/AllenNeuralDynamics/aind-exaspim-data-transformation"
+)
 
 __maintainers__ = ["Carson Berry"]
 __maintainer_emails__ = [

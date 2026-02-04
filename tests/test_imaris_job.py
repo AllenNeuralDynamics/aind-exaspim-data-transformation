@@ -32,7 +32,7 @@ class TestImarisCompressionJob(unittest.TestCase):
         """Test partition_list static method with basic input"""
         test_list = [1, 2, 3, 4, 5, 6]
         result = ImarisCompressionJob.partition_list(test_list, 2)
-        
+
         self.assertEqual(len(result), 2)
         self.assertEqual(result[0], [1, 3, 5])
         self.assertEqual(result[1], [2, 4, 6])
@@ -41,7 +41,7 @@ class TestImarisCompressionJob(unittest.TestCase):
         """Test partition_list with uneven distribution"""
         test_list = [1, 2, 3, 4, 5]
         result = ImarisCompressionJob.partition_list(test_list, 2)
-        
+
         self.assertEqual(len(result), 2)
         self.assertEqual(result[0], [1, 3, 5])
         self.assertEqual(result[1], [2, 4])
@@ -50,7 +50,7 @@ class TestImarisCompressionJob(unittest.TestCase):
         """Test partition_list with single partition"""
         test_list = [1, 2, 3]
         result = ImarisCompressionJob.partition_list(test_list, 1)
-        
+
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0], [1, 2, 3])
 
@@ -58,7 +58,7 @@ class TestImarisCompressionJob(unittest.TestCase):
         """Test partition_list with more partitions than items"""
         test_list = [1, 2]
         result = ImarisCompressionJob.partition_list(test_list, 5)
-        
+
         self.assertEqual(len(result), 5)
         self.assertEqual(result[0], [1])
         self.assertEqual(result[1], [2])
@@ -70,31 +70,36 @@ class TestImarisCompressionJob(unittest.TestCase):
     def test_get_partitioned_list_ims_files(self, mock_path_cls):
         """Test _get_partitioned_list_of_stack_paths finds .ims files"""
         job = ImarisCompressionJob(job_settings=self.test_settings)
-        
+
         # Mock Path objects
         mock_file1 = MagicMock(spec=Path)
         mock_file1.is_file.return_value = True
         mock_file1.__str__ = lambda x: "/fake/input/file1.ims"
-        
+
         mock_file2 = MagicMock(spec=Path)
         mock_file2.is_file.return_value = True
         mock_file2.__str__ = lambda x: "/fake/input/file2.ims"
-        
+
         mock_file3 = MagicMock(spec=Path)
         mock_file3.is_file.return_value = True
         mock_file3.__str__ = lambda x: "/fake/input/file3.ims"
-        
+
         mock_file4 = MagicMock(spec=Path)
         mock_file4.is_file.return_value = True
         mock_file4.__str__ = lambda x: "/fake/input/file4.ims"
-        
+
         # Mock glob to return .ims files
         mock_path = MagicMock()
-        mock_path.glob.return_value = [mock_file1, mock_file2, mock_file3, mock_file4]
+        mock_path.glob.return_value = [
+            mock_file1,
+            mock_file2,
+            mock_file3,
+            mock_file4,
+        ]
         mock_path_cls.return_value = mock_path
-        
+
         result = job._get_partitioned_list_of_stack_paths()
-        
+
         # Should partition into 2 groups
         self.assertEqual(len(result), 2)
         self.assertEqual(len(result[0]), 2)
@@ -104,33 +109,35 @@ class TestImarisCompressionJob(unittest.TestCase):
     def test_get_partitioned_list_fallback_h5(self, mock_path_cls):
         """Test _get_partitioned_list_of_stack_paths falls back to .h5 files"""
         job = ImarisCompressionJob(job_settings=self.test_settings)
-        
+
         mock_file1 = MagicMock(spec=Path)
         mock_file1.is_file.return_value = True
         mock_file1.__str__ = lambda x: "/fake/input/file1.h5"
-        
+
         mock_file2 = MagicMock(spec=Path)
         mock_file2.is_file.return_value = True
         mock_file2.__str__ = lambda x: "/fake/input/file2.h5"
-        
+
         # Mock path that returns empty for .ims, then .h5 files
         mock_path = MagicMock()
         mock_path.glob.side_effect = [[], [mock_file1, mock_file2]]
         mock_path_cls.return_value = mock_path
-        
+
         result = job._get_partitioned_list_of_stack_paths()
-        
+
         # Should find h5 files
         self.assertEqual(len(result), 2)
         self.assertEqual(len(result[0]), 1)
         self.assertEqual(len(result[1]), 1)
 
-    @patch("aind_exaspim_data_transformation.imaris_job.utils.read_json_as_dict")
+    @patch(
+        "aind_exaspim_data_transformation.imaris_job.utils.read_json_as_dict"
+    )
     def test_get_voxel_resolution_schema_1(self, mock_read_json):
         """Test _get_voxel_resolution with schema version < 2.0"""
         mock_acquisition_path = MagicMock()
         mock_acquisition_path.is_file.return_value = True
-        
+
         mock_read_json.return_value = {
             "schema_version": "1.0.0",
             "tiles": [
@@ -141,17 +148,21 @@ class TestImarisCompressionJob(unittest.TestCase):
                 }
             ],
         }
-        
-        result = ImarisCompressionJob._get_voxel_resolution(mock_acquisition_path)
-        
+
+        result = ImarisCompressionJob._get_voxel_resolution(
+            mock_acquisition_path
+        )
+
         self.assertEqual(result, [1.0, 1.0, 0.5])  # [Z, Y, X]
 
-    @patch("aind_exaspim_data_transformation.imaris_job.utils.read_json_as_dict")
+    @patch(
+        "aind_exaspim_data_transformation.imaris_job.utils.read_json_as_dict"
+    )
     def test_get_voxel_resolution_schema_2(self, mock_read_json):
         """Test _get_voxel_resolution with schema version >= 2.0"""
         mock_acquisition_path = MagicMock()
         mock_acquisition_path.is_file.return_value = True
-        
+
         mock_read_json.return_value = {
             "schema_version": "2.0.0",
             "data_streams": [
@@ -161,7 +172,10 @@ class TestImarisCompressionJob(unittest.TestCase):
                             "images": [
                                 {
                                     "image_to_acquisition_transform": [
-                                        {"object_type": "Scale", "scale": [0.75, 1.5, 1.5]}
+                                        {
+                                            "object_type": "Scale",
+                                            "scale": [0.75, 1.5, 1.5],
+                                        }
                                     ]
                                 }
                             ]
@@ -170,30 +184,36 @@ class TestImarisCompressionJob(unittest.TestCase):
                 }
             ],
         }
-        
-        result = ImarisCompressionJob._get_voxel_resolution(mock_acquisition_path)
-        
+
+        result = ImarisCompressionJob._get_voxel_resolution(
+            mock_acquisition_path
+        )
+
         self.assertEqual(result, [1.5, 1.5, 0.75])  # [Z, Y, X]
 
     def test_get_voxel_resolution_file_not_found(self):
         """Test _get_voxel_resolution raises error when file not found"""
         mock_acquisition_path = MagicMock()
         mock_acquisition_path.is_file.return_value = False
-        
+
         with self.assertRaises(FileNotFoundError):
             ImarisCompressionJob._get_voxel_resolution(mock_acquisition_path)
 
-    @patch("aind_exaspim_data_transformation.imaris_job.utils.read_json_as_dict")
-    def test_get_voxel_resolution_schema_2_invalid_structure(self, mock_read_json):
+    @patch(
+        "aind_exaspim_data_transformation.imaris_job.utils.read_json_as_dict"
+    )
+    def test_get_voxel_resolution_schema_2_invalid_structure(
+        self, mock_read_json
+    ):
         """Test _get_voxel_resolution_schema_2 with invalid structure"""
         mock_read_json.return_value = {
             "schema_version": "2.0.0",
             "data_streams": [],  # Empty, will cause IndexError
         }
-        
+
         mock_acquisition_path = MagicMock()
         mock_acquisition_path.is_file.return_value = True
-        
+
         with self.assertRaises(ValueError):
             ImarisCompressionJob._get_voxel_resolution(mock_acquisition_path)
 
@@ -202,24 +222,26 @@ class TestImarisCompressionJob(unittest.TestCase):
         """Test _get_voxel_size_from_imaris method"""
         mock_reader = MagicMock()
         mock_reader.get_voxel_size.return_value = ([2.0, 1.0, 1.0], b"um")
-        
-        mock_imaris_reader_cls.return_value.__enter__ = Mock(return_value=mock_reader)
+
+        mock_imaris_reader_cls.return_value.__enter__ = Mock(
+            return_value=mock_reader
+        )
         mock_imaris_reader_cls.return_value.__exit__ = Mock(return_value=False)
-        
+
         mock_path = MagicMock()
         mock_path.name = "test.ims"
-        
+
         result = ImarisCompressionJob._get_voxel_size_from_imaris(mock_path)
-        
+
         self.assertEqual(result, [2.0, 1.0, 1.0])
         mock_reader.get_voxel_size.assert_called_once()
 
     def test_get_compressor_blosc(self):
         """Test _get_compressor returns compressor kwargs for BLOSC"""
         job = ImarisCompressionJob(job_settings=self.test_settings)
-        
+
         result = job._get_compressor()
-        
+
         self.assertEqual(result, {"cname": "zstd", "clevel": 3, "shuffle": 1})
 
     def test_get_compressor_none(self):
@@ -232,9 +254,9 @@ class TestImarisCompressionJob(unittest.TestCase):
             compressor_name=None,
         )
         job = ImarisCompressionJob(job_settings=settings)
-        
+
         result = job._get_compressor()
-        
+
         self.assertIsNone(result)
 
     @patch("aind_exaspim_data_transformation.imaris_job.imaris_to_zarr_writer")
@@ -248,7 +270,7 @@ class TestImarisCompressionJob(unittest.TestCase):
         mock_acq_path = MagicMock()
         mock_acq_path.exists.return_value = True
         mock_input_source.joinpath.return_value = mock_acq_path
-        
+
         settings = ImarisJobSettings(
             input_source="/fake/input",
             output_directory="/fake/output",
@@ -261,23 +283,23 @@ class TestImarisCompressionJob(unittest.TestCase):
             downsample_levels=3,
         )
         job = ImarisCompressionJob(job_settings=settings)
-        
+
         # Override the input_source on the job settings for mocking
         job.job_settings.input_source = mock_input_source
-        
+
         # Mock stack files
         mock_stack1 = MagicMock()
         mock_stack1.stem = "stack1"
         mock_stack1.__str__ = lambda x: "/fake/input/stack1.ims"
-        
+
         mock_output_path = MagicMock()
         mock_path_cls.return_value = mock_output_path
-        
+
         with patch.object(
             job, "_get_voxel_resolution", return_value=[1.0, 0.5, 0.5]
         ):
             job._write_stacks([mock_stack1])
-        
+
         mock_writer.assert_called_once()
         args, kwargs = mock_writer.call_args
         self.assertEqual(kwargs["imaris_path"], "/fake/input/stack1.ims")
@@ -291,38 +313,40 @@ class TestImarisCompressionJob(unittest.TestCase):
     ):
         """Test _write_stacks without acquisition.json (extracts from Imaris)"""
         job = ImarisCompressionJob(job_settings=self.test_settings)
-        
+
         # Mock stack files
         mock_stack1 = MagicMock()
         mock_stack1.stem = "stack1"
         mock_stack1.__str__ = lambda x: "/fake/input/stack1.ims"
-        
+
         # Mock ImarisReader
         mock_reader = MagicMock()
         mock_reader.get_voxel_size.return_value = ([1.5, 0.75, 0.75], b"um")
-        mock_imaris_reader_cls.return_value.__enter__ = Mock(return_value=mock_reader)
+        mock_imaris_reader_cls.return_value.__enter__ = Mock(
+            return_value=mock_reader
+        )
         mock_imaris_reader_cls.return_value.__exit__ = Mock(return_value=False)
-        
+
         # Mock Path for acquisition.json not existing
         mock_acq_path = MagicMock()
         mock_acq_path.exists.return_value = False
-        
+
         mock_input_path = MagicMock()
         mock_input_path.joinpath.return_value = mock_acq_path
-        
+
         mock_output_path = MagicMock()
-        
+
         def path_side_effect(arg):
             if arg == "/fake/input":
                 return mock_input_path
             elif arg == "/fake/output":
                 return mock_output_path
             return MagicMock()
-        
+
         mock_path_cls.side_effect = path_side_effect
-        
+
         job._write_stacks([mock_stack1])
-        
+
         mock_writer.assert_called_once()
         args, kwargs = mock_writer.call_args
         self.assertEqual(kwargs["voxel_size"], [1.5, 0.75, 0.75])
@@ -330,7 +354,9 @@ class TestImarisCompressionJob(unittest.TestCase):
     @patch("aind_exaspim_data_transformation.imaris_job.imaris_to_zarr_writer")
     @patch("aind_exaspim_data_transformation.imaris_job.Path")
     @patch("aind_exaspim_data_transformation.imaris_job.urlparse")
-    def test_write_stacks_with_s3(self, mock_urlparse, mock_path_cls, mock_writer):
+    def test_write_stacks_with_s3(
+        self, mock_urlparse, mock_path_cls, mock_writer
+    ):
         """Test _write_stacks with S3 location"""
         settings_with_s3 = ImarisJobSettings(
             input_source="/fake/input",
@@ -341,39 +367,39 @@ class TestImarisCompressionJob(unittest.TestCase):
             compressor_name=CompressorName.BLOSC,
         )
         job = ImarisCompressionJob(job_settings=settings_with_s3)
-        
+
         # Mock urlparse
         mock_parsed = MagicMock()
         mock_parsed.netloc = "my-bucket"
         mock_parsed.path = "/my-prefix"
         mock_urlparse.return_value = mock_parsed
-        
+
         # Mock stack
         mock_stack1 = MagicMock()
         mock_stack1.stem = "stack1"
         mock_stack1.__str__ = lambda x: "/fake/input/stack1.ims"
-        
+
         # Mock paths
         mock_acq_path = MagicMock()
         mock_acq_path.exists.return_value = False
-        
+
         mock_input_path = MagicMock()
         mock_input_path.joinpath.return_value = mock_acq_path
-        
+
         mock_output_path = MagicMock()
-        
+
         def path_side_effect(arg):
             if isinstance(arg, str) and "input" in arg:
                 return mock_input_path
             return mock_output_path
-        
+
         mock_path_cls.side_effect = path_side_effect
-        
+
         with patch.object(
             job, "_get_voxel_size_from_imaris", return_value=[1.0, 0.5, 0.5]
         ):
             job._write_stacks([mock_stack1])
-        
+
         mock_writer.assert_called_once()
         args, kwargs = mock_writer.call_args
         self.assertEqual(kwargs["bucket_name"], "my-bucket")
@@ -381,7 +407,7 @@ class TestImarisCompressionJob(unittest.TestCase):
     def test_write_stacks_empty_list(self):
         """Test _write_stacks with empty list does nothing"""
         job = ImarisCompressionJob(job_settings=self.test_settings)
-        
+
         # Should not raise error
         job._write_stacks([])
 
@@ -397,18 +423,18 @@ class TestImarisCompressionJob(unittest.TestCase):
             partition_to_process=0,
         )
         job = ImarisCompressionJob(job_settings=settings_with_s3)
-        
+
         # Mock derivatives path
         mock_deriv_path = MagicMock()
         mock_deriv_path.exists.return_value = True
-        
+
         mock_input_path = MagicMock()
         mock_input_path.joinpath.return_value = mock_deriv_path
-        
+
         mock_path_cls.return_value = mock_input_path
-        
+
         job._upload_derivatives_folder()
-        
+
         mock_sync.assert_called_once()
 
     @patch("aind_exaspim_data_transformation.imaris_job.Path")
@@ -422,16 +448,16 @@ class TestImarisCompressionJob(unittest.TestCase):
             partition_to_process=0,
         )
         job = ImarisCompressionJob(job_settings=settings_with_s3)
-        
+
         # Mock derivatives path not existing
         mock_deriv_path = MagicMock()
         mock_deriv_path.exists.return_value = False
-        
+
         mock_input_path = MagicMock()
         mock_input_path.joinpath.return_value = mock_deriv_path
-        
+
         mock_path_cls.return_value = mock_input_path
-        
+
         # Should not raise error
         job._upload_derivatives_folder()
 
@@ -439,25 +465,29 @@ class TestImarisCompressionJob(unittest.TestCase):
     def test_run_job(self, mock_time):
         """Test run_job method"""
         mock_time.return_value = 1000.0
-        
+
         job = ImarisCompressionJob(job_settings=self.test_settings)
-        
+
         with patch.object(
             job, "_get_partitioned_list_of_stack_paths"
         ) as mock_get_list:
-            with patch.object(job, "_upload_derivatives_folder") as mock_upload:
+            with patch.object(
+                job, "_upload_derivatives_folder"
+            ) as mock_upload:
                 with patch.object(job, "_write_stacks") as mock_write:
                     mock_get_list.return_value = [["file1.ims"], ["file2.ims"]]
-                    
+
                     response = job.run_job()
-        
+
         self.assertEqual(response.status_code, 200)
         self.assertIn("Job finished", response.message)
         mock_get_list.assert_called_once()
         mock_upload.assert_called_once()  # partition 0
         mock_write.assert_called_once()
 
-    @patch("aind_exaspim_data_transformation.imaris_job.imaris_to_zarr_parallel")
+    @patch(
+        "aind_exaspim_data_transformation.imaris_job.imaris_to_zarr_parallel"
+    )
     @patch("aind_exaspim_data_transformation.imaris_job.Path")
     def test_write_stacks_with_tensorstore(
         self, mock_path_cls, mock_parallel_writer
@@ -475,35 +505,35 @@ class TestImarisCompressionJob(unittest.TestCase):
             tensorstore_batch_size=8,
         )
         job = ImarisCompressionJob(job_settings=settings_with_tensorstore)
-        
+
         # Mock stack files
         mock_stack1 = MagicMock()
         mock_stack1.stem = "stack1"
         mock_stack1.__str__ = lambda x: "/fake/input/stack1.ims"
-        
+
         # Mock Path for acquisition.json
         mock_acq_path = MagicMock()
         mock_acq_path.exists.return_value = False
-        
+
         mock_input_path = MagicMock()
         mock_input_path.joinpath.return_value = mock_acq_path
-        
+
         mock_output_path = MagicMock()
-        
+
         def path_side_effect(arg):
             if arg == "/fake/input":
                 return mock_input_path
             elif arg == "/fake/output":
                 return mock_output_path
             return MagicMock()
-        
+
         mock_path_cls.side_effect = path_side_effect
-        
+
         with patch.object(
             job, "_get_voxel_size_from_imaris", return_value=[1.0, 0.5, 0.5]
         ):
             job._write_stacks([mock_stack1])
-        
+
         # Verify parallel writer was called instead of standard writer
         mock_parallel_writer.assert_called_once()
         args, kwargs = mock_parallel_writer.call_args
@@ -513,7 +543,9 @@ class TestImarisCompressionJob(unittest.TestCase):
         self.assertEqual(kwargs["shard_shape"], (256, 256, 256))
         self.assertEqual(kwargs["max_concurrent_writes"], 8)
 
-    @patch("aind_exaspim_data_transformation.imaris_job.imaris_to_zarr_parallel")
+    @patch(
+        "aind_exaspim_data_transformation.imaris_job.imaris_to_zarr_parallel"
+    )
     @patch("aind_exaspim_data_transformation.imaris_job.Path")
     def test_write_stacks_tensorstore_with_s3(
         self, mock_path_cls, mock_parallel_writer
@@ -528,31 +560,31 @@ class TestImarisCompressionJob(unittest.TestCase):
             use_tensorstore=True,
         )
         job = ImarisCompressionJob(job_settings=settings)
-        
+
         mock_stack1 = MagicMock()
         mock_stack1.stem = "stack1"
         mock_stack1.__str__ = lambda x: "/fake/input/stack1.ims"
-        
+
         mock_acq_path = MagicMock()
         mock_acq_path.exists.return_value = False
-        
+
         mock_input_path = MagicMock()
         mock_input_path.joinpath.return_value = mock_acq_path
-        
+
         mock_output_path = MagicMock()
-        
+
         def path_side_effect(arg):
             if isinstance(arg, str) and "input" in arg:
                 return mock_input_path
             return mock_output_path
-        
+
         mock_path_cls.side_effect = path_side_effect
-        
+
         with patch.object(
             job, "_get_voxel_size_from_imaris", return_value=[1.0, 0.5, 0.5]
         ):
             job._write_stacks([mock_stack1])
-        
+
         mock_parallel_writer.assert_called_once()
         args, kwargs = mock_parallel_writer.call_args
         self.assertEqual(kwargs["bucket_name"], "my-bucket")

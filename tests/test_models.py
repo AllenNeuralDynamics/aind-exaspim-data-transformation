@@ -28,7 +28,7 @@ class TestImarisJobSettings(unittest.TestCase):
             num_of_partitions=4,
             partition_to_process=0,
         )
-        
+
         self.assertEqual(settings.input_source, Path("/path/to/input"))
         self.assertEqual(settings.output_directory, Path("/path/to/output"))
         self.assertEqual(settings.num_of_partitions, 4)
@@ -42,7 +42,7 @@ class TestImarisJobSettings(unittest.TestCase):
             num_of_partitions=1,
             partition_to_process=0,
         )
-        
+
         self.assertEqual(settings.compressor_name, CompressorName.BLOSC)
         self.assertEqual(settings.compressor_kwargs["cname"], "zstd")
         self.assertEqual(settings.compressor_kwargs["clevel"], 3)
@@ -55,7 +55,7 @@ class TestImarisJobSettings(unittest.TestCase):
             num_of_partitions=1,
             partition_to_process=0,
         )
-        
+
         self.assertEqual(settings.chunk_size, [128, 128, 128])
 
     def test_default_scale_factor(self):
@@ -66,7 +66,7 @@ class TestImarisJobSettings(unittest.TestCase):
             num_of_partitions=1,
             partition_to_process=0,
         )
-        
+
         self.assertEqual(settings.scale_factor, [2, 2, 2])
 
     def test_default_downsample_levels(self):
@@ -77,7 +77,7 @@ class TestImarisJobSettings(unittest.TestCase):
             num_of_partitions=1,
             partition_to_process=0,
         )
-        
+
         self.assertEqual(settings.downsample_levels, 5)
 
     def test_default_downsample_mode(self):
@@ -88,7 +88,7 @@ class TestImarisJobSettings(unittest.TestCase):
             num_of_partitions=1,
             partition_to_process=0,
         )
-        
+
         self.assertEqual(settings.downsample_mode, "mean")
 
     def test_custom_settings(self):
@@ -107,7 +107,7 @@ class TestImarisJobSettings(unittest.TestCase):
             downsample_mode="median",
             shard_size=[1024, 1024, 1024],
         )
-        
+
         self.assertEqual(settings.s3_location, "s3://my-bucket/prefix")
         self.assertEqual(settings.num_of_partitions, 8)
         self.assertEqual(settings.partition_to_process, 3)
@@ -126,13 +126,13 @@ class TestImarisJobSettings(unittest.TestCase):
             num_of_partitions=1,
             partition_to_process=0,
         )
-        
+
         self.assertIsNone(settings.s3_location)
 
     def test_valid_downsample_modes(self):
         """Test all valid downsample modes"""
         valid_modes = ["stride", "median", "mode", "mean", "min", "max"]
-        
+
         for mode in valid_modes:
             settings = ImarisJobSettings(
                 input_source="/path/to/input",

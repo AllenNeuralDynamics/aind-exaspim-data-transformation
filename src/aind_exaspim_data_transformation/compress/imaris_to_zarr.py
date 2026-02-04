@@ -693,7 +693,9 @@ class ImarisReader:
             elif isinstance(chunks, tuple):
                 # Clamp explicit chunks to level shape
                 lvl_shape = self.get_shape(data_path)
-                lvl_chunks = tuple(min(c, s) for c, s in zip(chunks, lvl_shape))
+                lvl_chunks = tuple(
+                    min(c, s) for c, s in zip(chunks, lvl_shape)
+                )
             else:
                 lvl_chunks = chunks
 
@@ -743,7 +745,9 @@ class ImarisReader:
             int(info.attrs["X"].tobytes()),
         )
 
-    def get_chunks(self, data_path: str = DEFAULT_DATA_PATH) -> Tuple[int, ...]:
+    def get_chunks(
+        self, data_path: str = DEFAULT_DATA_PATH
+    ) -> Tuple[int, ...]:
         """
         Return the HDF5 native chunk shape.
 
@@ -970,7 +974,9 @@ def imaris_to_zarr_writer(
         # Get voxel size from file if not provided
         if voxel_size is None:
             voxel_size, unit = reader.get_voxel_size()
-            logger.info(f"Extracted voxel size from Imaris: {voxel_size} {unit}")
+            logger.info(
+                f"Extracted voxel size from Imaris: {voxel_size} {unit}"
+            )
         else:
             logger.info(f"Using provided voxel size: {voxel_size}")
 
@@ -1047,7 +1053,9 @@ def imaris_to_zarr_writer(
         )
 
         root.attrs.update(metadata_dict)
-        logger.info(f"Successfully wrote {stack_name} with {actual_n_lvls} levels")
+        logger.info(
+            f"Successfully wrote {stack_name} with {actual_n_lvls} levels"
+        )
 
         return store_path
 
@@ -1108,7 +1116,10 @@ def create_tensorstore_spec(
                     "chunk_shape": list(chunk_shape),
                     "codecs": inner_codecs,
                     "index_codecs": [
-                        {"name": "bytes", "configuration": {"endian": "little"}},
+                        {
+                            "name": "bytes",
+                            "configuration": {"endian": "little"},
+                        },
                         {"name": "crc32c"},
                     ],
                     "index_location": "end",
@@ -1201,9 +1212,7 @@ def iter_block_aligned_slices(
         Tuple of slices for each dimension defining the block region
     """
     # Calculate number of blocks in each dimension
-    n_blocks = tuple(
-        math.ceil(s / b) for s, b in zip(shape, block_shape)
-    )
+    n_blocks = tuple(math.ceil(s / b) for s, b in zip(shape, block_shape))
 
     # Iterate over all blocks in Z, Y, X order
     for z_idx in range(n_blocks[0]):
@@ -1367,7 +1376,9 @@ def imaris_to_zarr_parallel(
         # Get voxel size from file if not provided
         if voxel_size is None:
             voxel_size, unit = reader.get_voxel_size()
-            logger.info(f"Extracted voxel size from Imaris: {voxel_size} {unit}")
+            logger.info(
+                f"Extracted voxel size from Imaris: {voxel_size} {unit}"
+            )
         else:
             logger.info(f"Using provided voxel size: {voxel_size}")
 
@@ -1437,7 +1448,9 @@ def imaris_to_zarr_parallel(
         write_shape_3d = shard_shape if shard_shape else chunk_shape
         pending_writes: List[ts.Future] = []
 
-        for block_slices_3d in iter_block_aligned_slices(shape_3d, write_shape_3d):
+        for block_slices_3d in iter_block_aligned_slices(
+            shape_3d, write_shape_3d
+        ):
             # Read block from source (this triggers dask computation)
             block_data_3d = dask_array[block_slices_3d].compute()
 
@@ -1623,9 +1636,7 @@ def imaris_to_zarr_translate_pyramid(
     ... )
     '/data/output/input.ome.zarr'
     """
-    logger.info(
-        f"Starting Imaris pyramid translation to Zarr: {imaris_path}"
-    )
+    logger.info(f"Starting Imaris pyramid translation to Zarr: {imaris_path}")
 
     # Set defaults
     if chunk_shape is None:
@@ -1657,13 +1668,17 @@ def imaris_to_zarr_translate_pyramid(
         # Get voxel size from file if not provided
         if voxel_size is None:
             voxel_size, unit = reader.get_voxel_size()
-            logger.info(f"Extracted voxel size from Imaris: {voxel_size} {unit}")
+            logger.info(
+                f"Extracted voxel size from Imaris: {voxel_size} {unit}"
+            )
         else:
             logger.info(f"Using provided voxel size: {voxel_size}")
 
         # Count available pyramid levels in Imaris file
         available_levels = _count_imaris_levels(reader)
-        logger.info(f"Imaris file contains {available_levels} resolution levels")
+        logger.info(
+            f"Imaris file contains {available_levels} resolution levels"
+        )
 
         # Determine how many levels to write
         if n_lvls is None:
@@ -1826,4 +1841,3 @@ def imaris_to_zarr_translate_pyramid(
         f"from Imaris pyramid"
     )
     return store_path
-

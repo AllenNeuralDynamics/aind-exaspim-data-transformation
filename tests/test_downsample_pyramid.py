@@ -14,7 +14,6 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 import numpy as np
 import psutil
 
-
 # S3 test configuration
 S3_BUCKET = "aind-scratch-data"
 S3_PREFIX = "exaSPIM_683791-screen_2026-01-26_14-53-41"
@@ -123,7 +122,9 @@ class ResourceMonitor:
 
 
 @contextmanager
-def timed_operation(name: str, monitor_resources: bool = True, interval: float = 0.5):
+def timed_operation(
+    name: str, monitor_resources: bool = True, interval: float = 0.5
+):
     """
     Context manager for timing operations with optional resource monitoring.
 
@@ -342,9 +343,7 @@ class TestCreateScaleSpec(unittest.TestCase):
             bucket_name=None,
         )
 
-        self.assertEqual(
-            spec["kvstore"]["path"], "/data/dataset.zarr/3"
-        )
+        self.assertEqual(spec["kvstore"]["path"], "/data/dataset.zarr/3")
 
     def test_shard_and_chunk_clamped_to_shape(self):
         """Test that shard and chunk shapes are clamped to data shape."""
@@ -510,9 +509,7 @@ class TestCreateDownsampleDataset(unittest.TestCase):
             )
 
         # Verify it was padded to 5D: [1, 1, 2, 2, 2]
-        self.assertEqual(
-            captured_spec["downsample_factors"], [1, 1, 2, 2, 2]
-        )
+        self.assertEqual(captured_spec["downsample_factors"], [1, 1, 2, 2, 2])
 
 
 class TestCreateDownsampleLevels(unittest.TestCase):
@@ -552,11 +549,11 @@ class TestCreateDownsampleLevels(unittest.TestCase):
             (1, 1, 25, 50, 75),
             (1, 1, 13, 25, 38),
         ]
-        
+
         # Create async mock that returns shapes sequentially
         async def mock_downsample(*args, **kwargs):
             return shapes.pop(0)
-        
+
         mock_create_ds.side_effect = mock_downsample
 
         result = create_downsample_levels(
@@ -611,7 +608,7 @@ class TestImarisToZarrParallelNewParams(unittest.TestCase):
 
 class TestLiveDownsamplePyramid(unittest.TestCase):
     """Live integration tests using real IMS files and S3 storage.
-    
+
     These tests require:
     - Access to the staging data directory
     - AWS credentials configured for S3 access
@@ -624,21 +621,21 @@ class TestLiveDownsamplePyramid(unittest.TestCase):
         cls.data_dir = DATA_DIR
         cls.s3_bucket = S3_BUCKET
         cls.s3_prefix = S3_PREFIX
-        
+
         # Find IMS files
         if cls.data_dir.exists():
             cls.ims_files = list(cls.data_dir.glob("*.ims"))
         else:
             cls.ims_files = []
-        
+
         # Create temp directory for local tests
         cls.temp_dir = tempfile.mkdtemp(prefix="test_downsample_pyramid_")
         cls.output_dir = Path(cls.temp_dir)
-        
+
         # System info
         mem = psutil.virtual_memory()
         cpu_count = psutil.cpu_count()
-        
+
         print(f"\n{'='*60}")
         print("=== Live Downsample Pyramid Test Setup ===")
         print(f"{'='*60}")
@@ -663,6 +660,7 @@ class TestLiveDownsamplePyramid(unittest.TestCase):
     def tearDownClass(cls):
         """Clean up temporary directory."""
         import shutil
+
         if cls.output_dir.exists():
             print(f"\nCleaning up: {cls.output_dir}")
             shutil.rmtree(cls.output_dir)
@@ -673,18 +671,18 @@ class TestLiveDownsamplePyramid(unittest.TestCase):
             compute_downsampled_shape,
             ImarisReader,
         )
-        
+
         if not self.ims_files:
             self.skipTest("No IMS files found in data directory")
-        
+
         ims_file = self.ims_files[0]
         print(f"\nTesting with: {ims_file.name}")
-        
+
         with ImarisReader(str(ims_file)) as reader:
             shape_3d = reader.get_shape()
             shape_5d = (1, 1) + tuple(shape_3d)
             print(f"  Original shape (5D): {shape_5d}")
-            
+
             # Test downsampling calculation
             for level in range(5):
                 factor_5d = (1, 1, 2**level, 2**level, 2**level)
@@ -692,18 +690,20 @@ class TestLiveDownsamplePyramid(unittest.TestCase):
                     factor_5d = (1, 1, 1, 1, 1)
                 else:
                     factor_5d = (1, 1, 2, 2, 2)
-                    
+
                 if level == 0:
                     downsampled = shape_5d
                 else:
                     # Apply factor iteratively
                     current = shape_5d
                     for _ in range(level):
-                        current = compute_downsampled_shape(current, (1, 1, 2, 2, 2))
+                        current = compute_downsampled_shape(
+                            current, (1, 1, 2, 2, 2)
+                        )
                     downsampled = current
-                    
+
                 print(f"  Level {level}: {downsampled}")
-                
+
                 # Verify dimensions are positive
                 self.assertTrue(all(d > 0 for d in downsampled))
 
@@ -713,22 +713,22 @@ class TestLiveDownsamplePyramid(unittest.TestCase):
             create_scale_spec,
             ImarisReader,
         )
-        
+
         if not self.ims_files:
             self.skipTest("No IMS files found in data directory")
-        
+
         ims_file = self.ims_files[0]
         stack_name = f"{ims_file.stem}.ome.zarr"
         s3_output_path = f"{self.s3_prefix}/{stack_name}"
-        
+
         print(f"\nTesting create_scale_spec for: {ims_file.name}")
         print(f"  S3 output path: s3://{self.s3_bucket}/{s3_output_path}")
-        
+
         with ImarisReader(str(ims_file)) as reader:
             shape_3d = reader.get_shape()
             shape_5d = (1, 1) + tuple(shape_3d)
             dtype = reader.get_dtype()
-            
+
             # Test spec creation for S3
             spec = create_scale_spec(
                 output_path=s3_output_path,
@@ -742,12 +742,12 @@ class TestLiveDownsamplePyramid(unittest.TestCase):
                 bucket_name=self.s3_bucket,
                 aws_region="us-west-2",
             )
-            
+
             print(f"  Generated spec for shape: {shape_5d}")
             print(f"  Spec driver: {spec['driver']}")
             print(f"  Kvstore driver: {spec['kvstore']['driver']}")
             print(f"  Kvstore bucket: {spec['kvstore']['bucket']}")
-            
+
             self.assertEqual(spec["driver"], "zarr3")
             self.assertEqual(spec["kvstore"]["driver"], "s3")
             self.assertEqual(spec["kvstore"]["bucket"], self.s3_bucket)
@@ -758,18 +758,18 @@ class TestLiveDownsamplePyramid(unittest.TestCase):
         from aind_exaspim_data_transformation.compress.imaris_to_zarr import (
             imaris_to_zarr_parallel,
         )
-        
+
         if not self.ims_files:
             self.skipTest("No IMS files found in data directory")
-        
+
         ims_file = self.ims_files[0]
         stack_name = f"{ims_file.stem}_test_local.ome.zarr"
-        
+
         print(f"\n{'='*60}")
         print(f"Testing local parallel write: {ims_file.name}")
         print(f"Output: {self.output_dir / stack_name}")
         print(f"{'='*60}")
-        
+
         with timed_operation(
             f"Local write (single level): {ims_file.name}",
             monitor_resources=True,
@@ -789,42 +789,42 @@ class TestLiveDownsamplePyramid(unittest.TestCase):
                 bucket_name=None,  # Local
                 max_concurrent_writes=8,
             )
-        
+
         print(f"  Output path: {result_path}")
-        
+
         # Verify output exists
         output_path = Path(result_path)
         self.assertTrue(output_path.exists())
-        
+
         # Check for level 0
         level_0 = output_path / "0"
         self.assertTrue(level_0.exists())
-        
+
         print(f"  ✓ Output verified at {output_path}")
 
     @unittest.skip("S3 write test - run manually when needed")
     def test_imaris_to_zarr_parallel_s3_with_pyramid(self):
         """Test parallel writer with S3 output and multiple pyramid levels.
-        
+
         This test writes to S3 and should be run manually to avoid
         unintended S3 writes during automated testing.
         """
         from aind_exaspim_data_transformation.compress.imaris_to_zarr import (
             imaris_to_zarr_parallel,
         )
-        
+
         if not self.ims_files:
             self.skipTest("No IMS files found in data directory")
-        
+
         ims_file = self.ims_files[0]
         stack_name = f"{ims_file.stem}_pyramid_test.ome.zarr"
         s3_output_path = f"s3://{self.s3_bucket}/{self.s3_prefix}/{stack_name}"
-        
+
         print(f"\n{'='*60}")
         print(f"Testing S3 parallel write with pyramid: {ims_file.name}")
         print(f"Output: {s3_output_path}")
         print(f"{'='*60}")
-        
+
         with timed_operation(
             f"S3 write with pyramid (8 levels): {ims_file.name}",
             monitor_resources=True,
@@ -844,22 +844,22 @@ class TestLiveDownsamplePyramid(unittest.TestCase):
                 bucket_name=self.s3_bucket,
                 max_concurrent_writes=16,
             )
-        
+
         print(f"  Output path: {result_path}")
-        
+
         # Print summary
         if "memory_mb" in stats:
             print(f"\n  📈 Performance Summary:")
             print(f"     Peak memory: {stats['memory_mb']['max']:.1f} MB")
             print(f"     Avg memory: {stats['memory_mb']['avg']:.1f} MB")
             print(f"     Total time: {stats['elapsed_seconds']:.2f}s")
-        
+
         self.assertTrue(result_path.startswith("s3://"))
 
     # @unittest.skip("S3 write test - run manually when needed")
     def test_imaris_to_zarr_translate_pyramid_s3(self):
         """Test translating existing Imaris pyramid levels to S3.
-        
+
         This test uses the new translate function which reads pre-computed
         pyramid levels from the Imaris file instead of re-downsampling.
         This should be significantly faster.
@@ -867,19 +867,21 @@ class TestLiveDownsamplePyramid(unittest.TestCase):
         from aind_exaspim_data_transformation.compress.imaris_to_zarr import (
             imaris_to_zarr_translate_pyramid,
         )
-        
+
         if not self.ims_files:
             self.skipTest("No IMS files found in data directory")
-        
+
         ims_file = self.ims_files[0]
         stack_name = f"{ims_file.stem}_translate_test.ome.zarr"
         s3_output_path = f"s3://{self.s3_bucket}/{self.s3_prefix}/{stack_name}"
-        
+
         print(f"\n{'='*60}")
-        print(f"Testing S3 pyramid TRANSLATION (no re-downsample): {ims_file.name}")
+        print(
+            f"Testing S3 pyramid TRANSLATION (no re-downsample): {ims_file.name}"
+        )
         print(f"Output: {s3_output_path}")
         print(f"{'='*60}")
-        
+
         with timed_operation(
             f"S3 translate pyramid (all levels): {ims_file.name}",
             monitor_resources=True,
@@ -897,16 +899,16 @@ class TestLiveDownsamplePyramid(unittest.TestCase):
                 bucket_name=self.s3_bucket,
                 max_concurrent_writes=16,
             )
-        
+
         print(f"  Output path: {result_path}")
-        
+
         # Print summary
         if "memory_mb" in stats:
             print(f"\n  📈 Performance Summary:")
             print(f"     Peak memory: {stats['memory_mb']['max']:.1f} MB")
             print(f"     Avg memory: {stats['memory_mb']['avg']:.1f} MB")
             print(f"     Total time: {stats['elapsed_seconds']:.2f}s")
-        
+
         self.assertTrue(result_path.startswith("s3://"))
 
 

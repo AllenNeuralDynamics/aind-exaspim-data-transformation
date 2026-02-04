@@ -145,7 +145,9 @@ class TestIterBlockAlignedSlices(unittest.TestCase):
 
         # Check first and last slices
         self.assertEqual(slices[0], (slice(0, 50), slice(0, 50), slice(0, 50)))
-        self.assertEqual(slices[-1], (slice(50, 100), slice(50, 100), slice(50, 100)))
+        self.assertEqual(
+            slices[-1], (slice(50, 100), slice(50, 100), slice(50, 100))
+        )
 
     def test_partial_blocks(self):
         """Test when shape doesn't evenly divide by block shape."""
@@ -228,8 +230,12 @@ class TestImarisToZarrParallel(unittest.TestCase):
     """Test suite for imaris_to_zarr_parallel function."""
 
     @patch("aind_exaspim_data_transformation.compress.imaris_to_zarr.ts")
-    @patch("aind_exaspim_data_transformation.compress.imaris_to_zarr.write_ome_ngff_metadata")
-    @patch("aind_exaspim_data_transformation.compress.imaris_to_zarr.ImarisReader")
+    @patch(
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr.write_ome_ngff_metadata"
+    )
+    @patch(
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr.ImarisReader"
+    )
     @patch("aind_exaspim_data_transformation.compress.imaris_to_zarr.Path")
     def test_basic_parallel_conversion(
         self,
@@ -254,12 +260,14 @@ class TestImarisToZarrParallel(unittest.TestCase):
         # Create mock dask array
         mock_dask_array = MagicMock()
         mock_dask_array.__getitem__ = MagicMock(return_value=MagicMock())
-        mock_dask_array.__getitem__.return_value.compute.return_value = np.zeros(
-            (64, 64, 64), dtype=np.uint16
+        mock_dask_array.__getitem__.return_value.compute.return_value = (
+            np.zeros((64, 64, 64), dtype=np.uint16)
         )
         mock_reader.as_dask_array.return_value = mock_dask_array
 
-        mock_imaris_reader_cls.return_value.__enter__ = Mock(return_value=mock_reader)
+        mock_imaris_reader_cls.return_value.__enter__ = Mock(
+            return_value=mock_reader
+        )
         mock_imaris_reader_cls.return_value.__exit__ = Mock(return_value=False)
 
         # Mock Path
@@ -296,8 +304,12 @@ class TestImarisToZarrParallel(unittest.TestCase):
         mock_write_metadata.assert_called_once()
 
     @patch("aind_exaspim_data_transformation.compress.imaris_to_zarr.ts")
-    @patch("aind_exaspim_data_transformation.compress.imaris_to_zarr.write_ome_ngff_metadata")
-    @patch("aind_exaspim_data_transformation.compress.imaris_to_zarr.ImarisReader")
+    @patch(
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr.write_ome_ngff_metadata"
+    )
+    @patch(
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr.ImarisReader"
+    )
     @patch("aind_exaspim_data_transformation.compress.imaris_to_zarr.Path")
     def test_s3_output(
         self,
@@ -321,12 +333,14 @@ class TestImarisToZarrParallel(unittest.TestCase):
 
         mock_dask_array = MagicMock()
         mock_dask_array.__getitem__ = MagicMock(return_value=MagicMock())
-        mock_dask_array.__getitem__.return_value.compute.return_value = np.zeros(
-            (64, 64, 64), dtype=np.uint16
+        mock_dask_array.__getitem__.return_value.compute.return_value = (
+            np.zeros((64, 64, 64), dtype=np.uint16)
         )
         mock_reader.as_dask_array.return_value = mock_dask_array
 
-        mock_imaris_reader_cls.return_value.__enter__ = Mock(return_value=mock_reader)
+        mock_imaris_reader_cls.return_value.__enter__ = Mock(
+            return_value=mock_reader
+        )
         mock_imaris_reader_cls.return_value.__exit__ = Mock(return_value=False)
 
         mock_path = MagicMock()
@@ -357,8 +371,12 @@ class TestImarisToZarrParallel(unittest.TestCase):
         self.assertIn("test-bucket", result)
 
     @patch("aind_exaspim_data_transformation.compress.imaris_to_zarr.ts")
-    @patch("aind_exaspim_data_transformation.compress.imaris_to_zarr.write_ome_ngff_metadata")
-    @patch("aind_exaspim_data_transformation.compress.imaris_to_zarr.ImarisReader")
+    @patch(
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr.write_ome_ngff_metadata"
+    )
+    @patch(
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr.ImarisReader"
+    )
     @patch("aind_exaspim_data_transformation.compress.imaris_to_zarr.Path")
     def test_voxel_size_extraction(
         self,
@@ -381,12 +399,14 @@ class TestImarisToZarrParallel(unittest.TestCase):
 
         mock_dask_array = MagicMock()
         mock_dask_array.__getitem__ = MagicMock(return_value=MagicMock())
-        mock_dask_array.__getitem__.return_value.compute.return_value = np.zeros(
-            (64, 64, 64), dtype=np.uint16
+        mock_dask_array.__getitem__.return_value.compute.return_value = (
+            np.zeros((64, 64, 64), dtype=np.uint16)
         )
         mock_reader.as_dask_array.return_value = mock_dask_array
 
-        mock_imaris_reader_cls.return_value.__enter__ = Mock(return_value=mock_reader)
+        mock_imaris_reader_cls.return_value.__enter__ = Mock(
+            return_value=mock_reader
+        )
         mock_imaris_reader_cls.return_value.__exit__ = Mock(return_value=False)
 
         mock_path = MagicMock()
