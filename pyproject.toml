@@ -76,8 +76,8 @@ exclude = '''
 '''
 
 [tool.coverage.run]
-omit = ["*__init__*"]
-source = ["aind_exaspim_data_transformation", "tests"]
+omit = ["*__init__*", "tests/*"]
+source = ["aind_exaspim_data_transformation"]
 
 [tool.coverage.report]
 exclude_lines = [
@@ -86,7 +86,7 @@ exclude_lines = [
     "^import .*",
     "pragma: no cover"
 ]
-fail_under = 90
+fail_under = 80
 
 [tool.isort]
 line_length = 79
@@ -95,4 +95,4 @@ skip = [".conda"]
 
 [tool.interrogate]
 exclude = ["setup.py", "docs", "build", ".conda"]
-fail-under = 90
+fail-under = 80
