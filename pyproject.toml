@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "aind-exaspim-data-transformation"
 description = "An imaris to zarr data transformation tool for ExaSPIM data. Designed to be used in aind-data-transfer-service."
 license = "MIT"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 authors = [
     {name = "Allen Institute for Neural Dynamics"}
 ]
