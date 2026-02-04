@@ -161,9 +161,9 @@ class TestOmeZarrMetadata(unittest.TestCase):
 
     def test_validate_axes_for_format_version_01(self):
         """Test _validate_axes_for_format with version 0.1"""
-        from ome_zarr.format import Format
+        from ome_zarr.format import FormatV01
 
-        fmt = Format("0.1")
+        fmt = FormatV01()
         axes = [{"name": "z"}, {"name": "y"}, {"name": "x"}]
 
         result_axes, ndim = _validate_axes_for_format(axes, fmt)
@@ -227,8 +227,25 @@ class TestOmeZarrMetadata(unittest.TestCase):
         from ome_zarr.format import CurrentFormat
 
         group = {}
-        datasets = [{"path": "0"}, {"path": "1"}]
-        axes = [{"name": "z"}, {"name": "y"}, {"name": "x"}]
+        datasets = [
+            {
+                "path": "0",
+                "coordinateTransformations": [
+                    {"type": "scale", "scale": [1.0, 1.0, 1.0]}
+                ],
+            },
+            {
+                "path": "1",
+                "coordinateTransformations": [
+                    {"type": "scale", "scale": [2.0, 2.0, 2.0]}
+                ],
+            },
+        ]
+        axes = [
+            {"name": "z", "type": "space", "unit": "micrometer"},
+            {"name": "y", "type": "space", "unit": "micrometer"},
+            {"name": "x", "type": "space", "unit": "micrometer"},
+        ]
 
         result = add_multiscales_metadata(
             group, datasets, fmt=CurrentFormat(), axes=axes
@@ -243,8 +260,19 @@ class TestOmeZarrMetadata(unittest.TestCase):
         from ome_zarr.format import CurrentFormat
 
         group = {}
-        datasets = [{"path": "0"}]
-        axes = [{"name": "z"}, {"name": "y"}, {"name": "x"}]
+        datasets = [
+            {
+                "path": "0",
+                "coordinateTransformations": [
+                    {"type": "scale", "scale": [1.0, 1.0, 1.0]}
+                ],
+            },
+        ]
+        axes = [
+            {"name": "z", "type": "space", "unit": "micrometer"},
+            {"name": "y", "type": "space", "unit": "micrometer"},
+            {"name": "x", "type": "space", "unit": "micrometer"},
+        ]
 
         result = add_multiscales_metadata(
             group, datasets, fmt=CurrentFormat(), axes=axes, name="test_image"
@@ -259,8 +287,19 @@ class TestOmeZarrMetadata(unittest.TestCase):
         from ome_zarr.format import CurrentFormat
 
         group = {}
-        datasets = [{"path": "0"}]
-        axes = [{"name": "z"}, {"name": "y"}, {"name": "x"}]
+        datasets = [
+            {
+                "path": "0",
+                "coordinateTransformations": [
+                    {"type": "scale", "scale": [1.0, 1.0, 1.0]}
+                ],
+            },
+        ]
+        axes = [
+            {"name": "z", "type": "space", "unit": "micrometer"},
+            {"name": "y", "type": "space", "unit": "micrometer"},
+            {"name": "x", "type": "space", "unit": "micrometer"},
+        ]
         omero_metadata = {
             "channels": [
                 {
@@ -336,9 +375,21 @@ class TestOmeZarrMetadata(unittest.TestCase):
         """Test write_ome_ngff_metadata integration"""
         # Mock return values
         mock_build_ome.return_value = {"channels": []}
+        # Return 3 transformations (one per level) to match n_lvls=3
+        # Each transformation must have 'type' and 'scale' keys
         mock_compute.return_value = (
-            [{"type": "scale"}],
-            [{"chunks": (64, 64, 64)}],
+            [
+                [
+                    {"type": "scale", "scale": [1.0, 1.0, 1.0, 1.0, 1.0]}
+                ],  # Level 0
+                [
+                    {"type": "scale", "scale": [1.0, 1.0, 2.0, 2.0, 2.0]}
+                ],  # Level 1
+                [
+                    {"type": "scale", "scale": [1.0, 1.0, 4.0, 4.0, 4.0]}
+                ],  # Level 2
+            ],
+            [{"chunks": (64, 64, 64)} for _ in range(3)],
         )
         mock_downscale.return_value = [[0, 0, 0, 0, 0]]
         mock_add_multiscales.return_value = {"attributes": {"ome": {}}}
@@ -355,7 +406,7 @@ class TestOmeZarrMetadata(unittest.TestCase):
         # Verify functions were called
         mock_build_ome.assert_called_once()
         mock_compute.assert_called_once()
-        mock_downscale.assert_called_once()
+        mock_downscale.assert_not_called()  # No origin provided
         mock_add_multiscales.assert_called_once()
 
         # Verify result structure

@@ -29,8 +29,8 @@ class TestImarisJobSettings(unittest.TestCase):
             partition_to_process=0,
         )
 
-        self.assertEqual(settings.input_source, Path("/path/to/input"))
-        self.assertEqual(settings.output_directory, Path("/path/to/output"))
+        self.assertEqual(settings.input_source, "/path/to/input")
+        self.assertEqual(settings.output_directory, "/path/to/output")
         self.assertEqual(settings.num_of_partitions, 4)
         self.assertEqual(settings.partition_to_process, 0)
 

@@ -1135,9 +1135,15 @@ def create_tensorstore_spec(
         ]
         effective_chunk_shape = list(chunk_shape)
 
+    # Build kvstore spec based on storage type
+    if is_s3:
+        kvstore = _s3_kvstore(path)
+    else:
+        kvstore = {"driver": "file", "path": path}
+
     spec = {
         "driver": "zarr3",
-        "kvstore": _s3_kvstore(path),
+        "kvstore": kvstore,
         "metadata": {
             "shape": list(shape),
             "chunk_grid": {

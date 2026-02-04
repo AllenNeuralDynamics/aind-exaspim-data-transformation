@@ -581,10 +581,11 @@ class TestImarisToZarrParallelNewParams(unittest.TestCase):
 
     def test_function_accepts_new_parameters(self):
         """Test that function accepts scale_factor and downsample_mode."""
+        import inspect
+
         from aind_exaspim_data_transformation.compress.imaris_to_zarr import (
             imaris_to_zarr_parallel,
         )
-        import inspect
 
         sig = inspect.signature(imaris_to_zarr_parallel)
         params = list(sig.parameters.keys())
@@ -594,10 +595,11 @@ class TestImarisToZarrParallelNewParams(unittest.TestCase):
 
     def test_default_parameter_values(self):
         """Test default values for new parameters."""
+        import inspect
+
         from aind_exaspim_data_transformation.compress.imaris_to_zarr import (
             imaris_to_zarr_parallel,
         )
-        import inspect
 
         sig = inspect.signature(imaris_to_zarr_parallel)
         params = sig.parameters
@@ -668,8 +670,8 @@ class TestLiveDownsamplePyramid(unittest.TestCase):
     def test_compute_downsampled_shape_real_dimensions(self):
         """Test shape calculation with real-world image dimensions."""
         from aind_exaspim_data_transformation.compress.imaris_to_zarr import (
-            compute_downsampled_shape,
             ImarisReader,
+            compute_downsampled_shape,
         )
 
         if not self.ims_files:
@@ -710,8 +712,8 @@ class TestLiveDownsamplePyramid(unittest.TestCase):
     def test_create_scale_spec_for_real_data(self):
         """Test creating TensorStore specs with real data dimensions."""
         from aind_exaspim_data_transformation.compress.imaris_to_zarr import (
-            create_scale_spec,
             ImarisReader,
+            create_scale_spec,
         )
 
         if not self.ims_files:

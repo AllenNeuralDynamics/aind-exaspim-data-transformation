@@ -1,8 +1,8 @@
 """Tests for the TensorStore-based parallel writer functions."""
 
-import unittest
-from unittest.mock import MagicMock, Mock, patch, PropertyMock
 import math
+import unittest
+from unittest.mock import MagicMock, Mock, PropertyMock, patch
 
 import numpy as np
 

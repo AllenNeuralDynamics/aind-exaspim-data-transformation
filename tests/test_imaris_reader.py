@@ -2,7 +2,7 @@
 
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, Mock, patch, PropertyMock
+from unittest.mock import MagicMock, Mock, PropertyMock, patch
 
 import dask.array as da
 import h5py

@@ -2,7 +2,7 @@
 
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, Mock, patch, call
+from unittest.mock import MagicMock, Mock, call, patch
 
 from aind_exaspim_data_transformation.imaris_job import ImarisCompressionJob
 from aind_exaspim_data_transformation.models import (
@@ -499,6 +499,7 @@ class TestImarisCompressionJob(unittest.TestCase):
             num_of_partitions=1,
             partition_to_process=0,
             use_tensorstore=True,
+            translate_imaris_pyramid=False,  # Use parallel writer, not translator
             chunk_size=[128, 128, 128],
             shard_size=[256, 256, 256],
             downsample_levels=3,
@@ -558,6 +559,7 @@ class TestImarisCompressionJob(unittest.TestCase):
             num_of_partitions=1,
             partition_to_process=0,
             use_tensorstore=True,
+            translate_imaris_pyramid=False,  # Use parallel writer, not translator
         )
         job = ImarisCompressionJob(job_settings=settings)
 

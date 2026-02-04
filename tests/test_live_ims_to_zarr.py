@@ -5,13 +5,13 @@ the conversion pipeline end-to-end.
 """
 
 import os
+import shutil
+import tempfile
+import threading
 import time
 import unittest
 from contextlib import contextmanager
 from pathlib import Path
-import shutil
-import tempfile
-import threading
 
 import psutil
 
@@ -167,6 +167,7 @@ def timed_operation(
         stats["elapsed_seconds"] = elapsed
 
 
+@unittest.skip("S3 write test - run manually when needed")
 class TestLiveImsToZarr(unittest.TestCase):
     """Live tests using real IMS files from staging area"""
 
@@ -364,6 +365,7 @@ class TestLiveImsToZarr(unittest.TestCase):
 
             print(f"\n✓ Pyramid generated successfully")
 
+    @unittest.skip("S3 write test - run manually when needed")
     def test_imaris_to_zarr_writer_single_file(self):
         """Test full conversion pipeline: IMS -> Zarr with single file"""
         if not self.ims_files:
@@ -446,6 +448,7 @@ class TestLiveImsToZarr(unittest.TestCase):
 
         print(f"\n✓ Conversion completed successfully")
 
+    @unittest.skip("S3 write test - run manually when needed")
     def test_imaris_to_zarr_writer_custom_voxel_size(self):
         """Test conversion with custom voxel size override"""
         if not self.ims_files:
