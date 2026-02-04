@@ -234,6 +234,10 @@ class TestImarisToZarrParallel(unittest.TestCase):
         "write_ome_ngff_metadata"
     )
     @patch(
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr."
+        "_write_zarr_metadata"
+    )
+    @patch(
         "aind_exaspim_data_transformation.compress.imaris_to_zarr.ImarisReader"
     )
     @patch("aind_exaspim_data_transformation.compress.imaris_to_zarr.Path")
@@ -241,6 +245,7 @@ class TestImarisToZarrParallel(unittest.TestCase):
         self,
         mock_path_cls,
         mock_imaris_reader_cls,
+        mock_write_zarr_metadata,
         mock_write_metadata,
         mock_ts,
     ):
@@ -299,6 +304,7 @@ class TestImarisToZarrParallel(unittest.TestCase):
         )
 
         self.assertIsNotNone(result)
+        mock_write_zarr_metadata.assert_called_once()
 
         # Assertions
         mock_imaris_reader_cls.assert_called_once_with("/fake/input/test.ims")
@@ -311,6 +317,10 @@ class TestImarisToZarrParallel(unittest.TestCase):
         "write_ome_ngff_metadata"
     )
     @patch(
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr."
+        "_write_zarr_metadata"
+    )
+    @patch(
         "aind_exaspim_data_transformation.compress.imaris_to_zarr.ImarisReader"
     )
     @patch("aind_exaspim_data_transformation.compress.imaris_to_zarr.Path")
@@ -318,6 +328,7 @@ class TestImarisToZarrParallel(unittest.TestCase):
         self,
         mock_path_cls,
         mock_imaris_reader_cls,
+        mock_write_zarr_metadata,
         mock_write_metadata,
         mock_ts,
     ):
@@ -368,6 +379,8 @@ class TestImarisToZarrParallel(unittest.TestCase):
             bucket_name="test-bucket",
             n_lvls=1,
         )
+
+        mock_write_zarr_metadata.assert_called_once()
 
         # Verify S3 path was constructed
         self.assertIn("s3://", result)
