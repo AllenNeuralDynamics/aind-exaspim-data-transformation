@@ -412,9 +412,8 @@ class TestLiveImsToZarr(unittest.TestCase):
         if stats.get("elapsed_seconds", 0) > 0:
             throughput = input_size_gb / stats["elapsed_seconds"]
             print(f"\n  📈 Throughput: {throughput:.2f} GB/s")
-            print(
-                f"Peak memory: {stats.get('memory_mb', {}).get('max', 0):.1f} MB"
-            )
+            max_memory_mb = stats.get("memory_mb", {}).get("max", 0)
+            print(f"  Peak memory: {max_memory_mb:.1f} MB")
 
         # Verify output
         self.assertTrue(
@@ -673,9 +672,8 @@ class TestLiveImsToZarr(unittest.TestCase):
         if stats.get("elapsed_seconds", 0) > 0:
             throughput = input_size_gb / stats["elapsed_seconds"]
             print(f"\n  📈 Throughput: {throughput:.2f} GB/s")
-            print(
-                f"Peak memory:{stats.get('memory_mb',{}).get('max',0):.1f} MB"
-            )
+            max_memory_mb = stats.get("memory_mb", {}).get("max", 0)
+            print(f"  Peak memory: {max_memory_mb:.1f} MB")
 
         print(f"  Result path: {result_path}")
 
