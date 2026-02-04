@@ -379,6 +379,10 @@ class TestImarisToZarrParallel(unittest.TestCase):
         "write_ome_ngff_metadata"
     )
     @patch(
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr."
+        "_write_zarr_metadata"
+    )
+    @patch(
         "aind_exaspim_data_transformation.compress.imaris_to_zarr.ImarisReader"
     )
     @patch("aind_exaspim_data_transformation.compress.imaris_to_zarr.Path")
@@ -386,6 +390,7 @@ class TestImarisToZarrParallel(unittest.TestCase):
         self,
         mock_path_cls,
         mock_imaris_reader_cls,
+        mock_write_zarr_metadata,
         mock_write_metadata,
         mock_ts,
     ):
@@ -435,6 +440,7 @@ class TestImarisToZarrParallel(unittest.TestCase):
             output_path="/fake/output",
             n_lvls=1,
         )
+        mock_write_zarr_metadata.assert_called_once()
 
         # Verify voxel size was extracted
         mock_reader.get_voxel_size.assert_called_once()

@@ -2,6 +2,7 @@
 Functions to generate the OMEZarr 0.5 metadata
 """
 
+import logging
 from typing import Dict, List, Optional, Tuple, cast
 
 import numpy as np
@@ -238,7 +239,9 @@ def _validate_axes_for_format(axes: List[Dict], fmt: Format):
     """
     if axes is not None:
         if fmt.version in ("0.1", "0.2"):
-            print("axes ignored for version 0.1 or 0.2")
+            logging.getLogger(__name__).info(
+                "Axes ignored for format version %s", fmt.version
+            )
             axes = None
         else:
             axes = _get_valid_axes(axes=axes, fmt=fmt)
