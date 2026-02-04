@@ -1,7 +1,6 @@
 """Tests for models module"""
 
 import unittest
-from pathlib import Path
 
 from aind_exaspim_data_transformation.models import (
     CompressorName,

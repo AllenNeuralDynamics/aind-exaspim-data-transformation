@@ -3,16 +3,13 @@ Utility functions for image readers
 """
 
 import json
-import multiprocessing
 import os
 import platform
 import subprocess
-from concurrent.futures import ThreadPoolExecutor
-from typing import List, Optional
+from typing import Optional
 
 import boto3
 import numpy as np
-from natsort import natsorted
 from numpy.typing import ArrayLike
 
 from aind_exaspim_data_transformation.models import PathLike
@@ -300,117 +297,6 @@ def generate_jumps(n: int, jump_size: Optional[int] = 128):
     #     jumps.append(n)
 
     return jumps
-
-
-def get_axis_index(czi_shape: List[int], czi_axis: int, axis_name: str):
-    """
-    Gets the axis index from the CZI natural shape.
-
-    Parameters
-    ----------
-    czi_shape: List[int]
-        List of ints of the CZI shape. CZI files come
-        with many more axis than traditional file formats.
-        Please, check its documentation.
-
-    czi_axis: int
-        Axis from which we will pull the index.
-
-    axis_name: str
-        Axis name. Allowed axis names are:
-        ['b', 'v', 'i', 'h', 'r', 's', 'c', 't', 'z', 'y', 'x', '0']
-    """
-    czi_axis = list(str(czi_axis).lower())
-    axis_name = axis_name.lower()
-    ALLOWED_AXIS_NAMES = [
-        "b",
-        "v",
-        "i",
-        "h",
-        "r",
-        "s",
-        "c",
-        "t",
-        "z",
-        "y",
-        "x",
-        "0",
-    ]
-
-    if axis_name not in ALLOWED_AXIS_NAMES:
-        raise ValueError(f"Axis {axis_name} not valid!")
-
-    czi_shape = list(czi_shape)
-    ax_index = czi_axis.index(axis_name)
-
-    return ax_index, czi_shape[ax_index]
-
-
-def czi_block_generator(
-    czi_decriptor,
-    axis_jumps: Optional[int] = 128,
-    slice_axis: Optional[str] = "z",
-):
-    """
-    CZI data block generator.
-
-    Parameters
-    ----------
-    czi_decriptor
-        Opened CZI file.
-
-    axis_jumps: int
-        Number of jumps in a given axis.
-        Default: 128
-
-    slice_axis: str
-        Axis in which the jumps will be
-        generated.
-        Default: 'z'
-
-    Yields
-    ------
-    np.ndarray
-        Numpy array with the data
-        of the picked block.
-
-    slice
-        Slice of start and end positions
-        in a given axis.
-    """
-
-    axis_index, axis_shape = get_axis_index(
-        czi_decriptor.shape, czi_decriptor.axes, slice_axis
-    )
-
-    subblock_directory = czi_decriptor.filtered_subblock_directory
-
-    # Sorting indices so planes are ordered
-    ordered_subblock_directory = natsorted(
-        subblock_directory, key=lambda sb: sb.start[axis_index]
-    )
-
-    jumps = generate_jumps(axis_shape, axis_jumps)
-    n_jumps = len(jumps)
-    for i, start_slice in enumerate(jumps):
-        if i + 1 < n_jumps:
-            end_slice = jumps[i + 1]
-
-        else:
-            end_slice = axis_shape
-
-        block = read_slices_czi(
-            czi_decriptor,
-            subblock_directory=ordered_subblock_directory,
-            start_slice=start_slice,
-            end_slice=end_slice,
-            slice_axis=slice_axis,
-            resize=True,
-            order=0,
-            out=None,
-            max_workers=None,
-        )
-        yield block, slice(start_slice, end_slice)
 
 
 def write_json(

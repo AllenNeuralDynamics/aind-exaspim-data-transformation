@@ -1,7 +1,7 @@
 """Tests for omezarr_metadata module"""
 
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from aind_exaspim_data_transformation.compress.omezarr_metadata import (
     _build_ome,
@@ -380,13 +380,22 @@ class TestOmeZarrMetadata(unittest.TestCase):
         mock_compute.return_value = (
             [
                 [
-                    {"type": "scale", "scale": [1.0, 1.0, 1.0, 1.0, 1.0]}
+                    {
+                        "type": "scale",
+                        "scale": [1.0, 1.0, 1.0, 1.0, 1.0],
+                    }
                 ],  # Level 0
                 [
-                    {"type": "scale", "scale": [1.0, 1.0, 2.0, 2.0, 2.0]}
+                    {
+                        "type": "scale",
+                        "scale": [1.0, 1.0, 2.0, 2.0, 2.0],
+                    }
                 ],  # Level 1
                 [
-                    {"type": "scale", "scale": [1.0, 1.0, 4.0, 4.0, 4.0]}
+                    {
+                        "type": "scale",
+                        "scale": [1.0, 1.0, 4.0, 4.0, 4.0],
+                    }
                 ],  # Level 2
             ],
             [{"chunks": (64, 64, 64)} for _ in range(3)],

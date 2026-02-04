@@ -52,7 +52,7 @@ version = {attr = "aind_exaspim_data_transformation.__version__"}
 
 [tool.black]
 line-length = 79
-target_version = ['py310']
+target_version = ['py312']
 exclude = '''
 
 (

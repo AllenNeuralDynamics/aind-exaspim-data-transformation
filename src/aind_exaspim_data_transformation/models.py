@@ -42,7 +42,7 @@ class ImarisJobSettings(BasicJobSettings):
     )
     compressor_name: Optional[CompressorName] = Field(
         default=CompressorName.BLOSC,
-        description="Type of compressor to use. Set to None to disable compression.",
+        description="Compressor to use. Set to None to disable compression.",
         title="Compressor Name.",
     )
     # It will be safer if these kwargs fields were objects with known schemas
@@ -99,10 +99,10 @@ class ImarisJobSettings(BasicJobSettings):
     translate_imaris_pyramid: bool = Field(
         default=True,
         description=(
-            "If True, directly translate existing Imaris pyramid levels to Zarr "
-            "instead of re-computing downsampled levels. This is faster and uses "
-            "less memory. If False, pyramid levels are re-computed using the "
-            "downsample_mode setting. Only applies when use_tensorstore=True."
+            "If True, translate existing Imaris pyramid levels to Zarr "
+            "instead of re-computing downsampled levels. Faster and uses "
+            "less memory. If False, pyramid levels are re-computed using "
+            "downsample_mode. Only applies when use_tensorstore=True."
         ),
         title="Translate Imaris Pyramid",
     )

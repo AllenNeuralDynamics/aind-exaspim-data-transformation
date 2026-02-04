@@ -1,8 +1,7 @@
 """Tests for the TensorStore-based parallel writer functions."""
 
-import math
 import unittest
-from unittest.mock import MagicMock, Mock, PropertyMock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import numpy as np
 
@@ -231,7 +230,8 @@ class TestImarisToZarrParallel(unittest.TestCase):
 
     @patch("aind_exaspim_data_transformation.compress.imaris_to_zarr.ts")
     @patch(
-        "aind_exaspim_data_transformation.compress.imaris_to_zarr.write_ome_ngff_metadata"
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr."
+        "write_ome_ngff_metadata"
     )
     @patch(
         "aind_exaspim_data_transformation.compress.imaris_to_zarr.ImarisReader"
@@ -298,6 +298,8 @@ class TestImarisToZarrParallel(unittest.TestCase):
             n_lvls=1,
         )
 
+        self.assertIsNotNone(result)
+
         # Assertions
         mock_imaris_reader_cls.assert_called_once_with("/fake/input/test.ims")
         mock_ts.open.assert_called()
@@ -305,7 +307,8 @@ class TestImarisToZarrParallel(unittest.TestCase):
 
     @patch("aind_exaspim_data_transformation.compress.imaris_to_zarr.ts")
     @patch(
-        "aind_exaspim_data_transformation.compress.imaris_to_zarr.write_ome_ngff_metadata"
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr."
+        "write_ome_ngff_metadata"
     )
     @patch(
         "aind_exaspim_data_transformation.compress.imaris_to_zarr.ImarisReader"
@@ -372,7 +375,8 @@ class TestImarisToZarrParallel(unittest.TestCase):
 
     @patch("aind_exaspim_data_transformation.compress.imaris_to_zarr.ts")
     @patch(
-        "aind_exaspim_data_transformation.compress.imaris_to_zarr.write_ome_ngff_metadata"
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr."
+        "write_ome_ngff_metadata"
     )
     @patch(
         "aind_exaspim_data_transformation.compress.imaris_to_zarr.ImarisReader"
@@ -385,7 +389,7 @@ class TestImarisToZarrParallel(unittest.TestCase):
         mock_write_metadata,
         mock_ts,
     ):
-        """Test that voxel size is extracted from file when not provided."""
+        """Test voxel size extraction when not provided."""
         from aind_exaspim_data_transformation.compress.imaris_to_zarr import (
             imaris_to_zarr_parallel,
         )

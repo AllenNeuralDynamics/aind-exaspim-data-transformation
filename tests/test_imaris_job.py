@@ -2,7 +2,7 @@
 
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, Mock, call, patch
+from unittest.mock import MagicMock, Mock, patch
 
 from aind_exaspim_data_transformation.imaris_job import ImarisCompressionJob
 from aind_exaspim_data_transformation.models import (
@@ -311,7 +311,10 @@ class TestImarisCompressionJob(unittest.TestCase):
     def test_write_stacks_without_acquisition_json(
         self, mock_imaris_reader_cls, mock_path_cls, mock_writer
     ):
-        """Test _write_stacks without acquisition.json (extracts from Imaris)"""
+        """Test _write_stacks without acquisition.json.
+
+        Voxel size should be extracted from the Imaris file.
+        """
         job = ImarisCompressionJob(job_settings=self.test_settings)
 
         # Mock stack files
@@ -499,7 +502,8 @@ class TestImarisCompressionJob(unittest.TestCase):
             num_of_partitions=1,
             partition_to_process=0,
             use_tensorstore=True,
-            translate_imaris_pyramid=False,  # Use parallel writer, not translator
+            translate_imaris_pyramid=False,
+            # Use parallel writer, not translator
             chunk_size=[128, 128, 128],
             shard_size=[256, 256, 256],
             downsample_levels=3,
@@ -559,7 +563,8 @@ class TestImarisCompressionJob(unittest.TestCase):
             num_of_partitions=1,
             partition_to_process=0,
             use_tensorstore=True,
-            translate_imaris_pyramid=False,  # Use parallel writer, not translator
+            translate_imaris_pyramid=False,
+            # Use parallel writer, not translator
         )
         job = ImarisCompressionJob(job_settings=settings)
 

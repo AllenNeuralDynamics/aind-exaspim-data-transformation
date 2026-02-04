@@ -1,7 +1,6 @@
 """Tests for the multiscale pyramid downsampling functions."""
 
 import asyncio
-import math
 import os
 import tempfile
 import threading
@@ -9,7 +8,7 @@ import time
 import unittest
 from contextlib import contextmanager
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
 import psutil
@@ -284,7 +283,7 @@ class TestBuildKvstoreSpec(unittest.TestCase):
         )
 
     def test_s3_kvstore_default_cpu_count(self):
-        """Test S3 kvstore uses multiprocessing cpu_count when not specified."""
+        """Test S3 kvstore uses cpu_count when not specified."""
         from aind_exaspim_data_transformation.compress.imaris_to_zarr import (
             _build_kvstore_spec,
         )
@@ -565,6 +564,8 @@ class TestCreateDownsampleLevels(unittest.TestCase):
             shard_shape=(1, 1, 64, 64, 64),
             chunk_shape=(1, 1, 32, 32, 32),
         )
+
+        self.assertIsNotNone(result)
 
         # Should have called create_downsample_dataset 3 times (levels 1, 2, 3)
         self.assertEqual(mock_create_ds.call_count, 3)
@@ -851,7 +852,7 @@ class TestLiveDownsamplePyramid(unittest.TestCase):
 
         # Print summary
         if "memory_mb" in stats:
-            print(f"\n  📈 Performance Summary:")
+            print("\n  📈 Performance Summary:")
             print(f"     Peak memory: {stats['memory_mb']['max']:.1f} MB")
             print(f"     Avg memory: {stats['memory_mb']['avg']:.1f} MB")
             print(f"     Total time: {stats['elapsed_seconds']:.2f}s")
@@ -879,7 +880,8 @@ class TestLiveDownsamplePyramid(unittest.TestCase):
 
         print(f"\n{'='*60}")
         print(
-            f"Testing S3 pyramid TRANSLATION (no re-downsample): {ims_file.name}"
+            "Testing S3 pyramid TRANSLATION (no re-downsample): "
+            f"{ims_file.name}"
         )
         print(f"Output: {s3_output_path}")
         print(f"{'='*60}")
@@ -906,7 +908,7 @@ class TestLiveDownsamplePyramid(unittest.TestCase):
 
         # Print summary
         if "memory_mb" in stats:
-            print(f"\n  📈 Performance Summary:")
+            print("\n  📈 Performance Summary:")
             print(f"     Peak memory: {stats['memory_mb']['max']:.1f} MB")
             print(f"     Avg memory: {stats['memory_mb']['avg']:.1f} MB")
             print(f"     Total time: {stats['elapsed_seconds']:.2f}s")

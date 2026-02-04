@@ -1,15 +1,11 @@
 """Tests for imaris_to_zarr_writer function"""
 
 import unittest
-from pathlib import Path
-from unittest.mock import MagicMock, Mock, call, patch
+from unittest.mock import MagicMock, Mock, patch
 
-import dask.array as da
 import numpy as np
-import zarr
 
 from aind_exaspim_data_transformation.compress.imaris_to_zarr import (
-    ImarisReader,
     imaris_to_zarr_writer,
 )
 
@@ -26,13 +22,16 @@ class TestImarisToZarrWriter(unittest.TestCase):
         self.test_scale_factor = [2, 2, 2]
 
     @patch(
-        "aind_exaspim_data_transformation.compress.imaris_to_zarr.zarr.open_group"
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr."
+        "zarr.open_group"
     )
     @patch(
-        "aind_exaspim_data_transformation.compress.imaris_to_zarr.da.to_zarr"
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr."
+        "da.to_zarr"
     )
     @patch(
-        "aind_exaspim_data_transformation.compress.imaris_to_zarr.write_ome_ngff_metadata"
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr."
+        "write_ome_ngff_metadata"
     )
     @patch(
         "aind_exaspim_data_transformation.compress.imaris_to_zarr.ImarisReader"
@@ -104,13 +103,16 @@ class TestImarisToZarrWriter(unittest.TestCase):
         mock_root.attrs.update.assert_called_once()
 
     @patch(
-        "aind_exaspim_data_transformation.compress.imaris_to_zarr.zarr.open_group"
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr."
+        "zarr.open_group"
     )
     @patch(
-        "aind_exaspim_data_transformation.compress.imaris_to_zarr.da.to_zarr"
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr."
+        "da.to_zarr"
     )
     @patch(
-        "aind_exaspim_data_transformation.compress.imaris_to_zarr.write_ome_ngff_metadata"
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr."
+        "write_ome_ngff_metadata"
     )
     @patch(
         "aind_exaspim_data_transformation.compress.imaris_to_zarr.ImarisReader"
@@ -168,13 +170,16 @@ class TestImarisToZarrWriter(unittest.TestCase):
         mock_reader.get_voxel_size.assert_called_once()
 
     @patch(
-        "aind_exaspim_data_transformation.compress.imaris_to_zarr.zarr.open_group"
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr."
+        "zarr.open_group"
     )
     @patch(
-        "aind_exaspim_data_transformation.compress.imaris_to_zarr.da.to_zarr"
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr."
+        "da.to_zarr"
     )
     @patch(
-        "aind_exaspim_data_transformation.compress.imaris_to_zarr.write_ome_ngff_metadata"
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr."
+        "write_ome_ngff_metadata"
     )
     @patch(
         "aind_exaspim_data_transformation.compress.imaris_to_zarr.ImarisReader"
@@ -232,13 +237,16 @@ class TestImarisToZarrWriter(unittest.TestCase):
         self.assertIn("test-bucket", args[0])
 
     @patch(
-        "aind_exaspim_data_transformation.compress.imaris_to_zarr.zarr.open_group"
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr."
+        "zarr.open_group"
     )
     @patch(
-        "aind_exaspim_data_transformation.compress.imaris_to_zarr.da.to_zarr"
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr."
+        "da.to_zarr"
     )
     @patch(
-        "aind_exaspim_data_transformation.compress.imaris_to_zarr.write_ome_ngff_metadata"
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr."
+        "write_ome_ngff_metadata"
     )
     @patch(
         "aind_exaspim_data_transformation.compress.imaris_to_zarr.ImarisReader"

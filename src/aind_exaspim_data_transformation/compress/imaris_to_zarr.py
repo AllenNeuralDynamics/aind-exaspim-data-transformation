@@ -26,7 +26,9 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import dask.array as da
 import h5py
-import hdf5plugin  # noqa: F401 - registers HDF5 compression filters (LZ4, etc.)
+
+# noqa: F401 - registers HDF5 compression filters (LZ4, etc.)
+import hdf5plugin  # noqa: F401
 import numpy as np
 import tensorstore as ts
 import zarr
@@ -76,8 +78,8 @@ def compute_downsampled_shape(
     """
     if len(shape) != len(downsample_factor):
         raise ValueError(
-            f"Shape ({len(shape)}D) and downsample_factor ({len(downsample_factor)}D) "
-            "must have the same number of dimensions"
+            f"Shape ({len(shape)}D) and downsample_factor "
+            f"({len(downsample_factor)}D) must have the same dimensions"
         )
     return tuple(math.ceil(s / f) for s, f in zip(shape, downsample_factor))
 
@@ -199,7 +201,7 @@ def create_scale_spec(
     # Clamp chunk shape to data shape first
     clamped_chunk = tuple(min(c, d) for c, d in zip(chunk_shape, data_shape))
 
-    # Clamp shard shape to data shape, then ensure it's a multiple of chunk shape
+    # Clamp shard shape to data shape, then ensure it's a multiple of chunk
     # This is required by Zarr v3 sharding: shard must be divisible by chunk
     clamped_shard = []
     for s, c, d in zip(shard_shape, clamped_chunk, data_shape):
@@ -505,7 +507,6 @@ def create_downsample_levels(
 
     async def _generate_all_levels():
         """Async helper to generate all levels sequentially."""
-        current_shape = base_shape
         for level_idx in range(n_levels - 1):
             start_scale = level_idx
             new_shape = await create_downsample_dataset(
@@ -522,7 +523,6 @@ def create_downsample_levels(
                 bucket_name=bucket_name,
             )
             shapes.append(new_shape)
-            current_shape = new_shape
 
     # Run the async generation
     asyncio.run(_generate_all_levels())
@@ -667,7 +667,7 @@ class ImarisReader:
         Returns
         -------
         List[da.Array]
-            List of dask arrays, one per pyramid level (highest resolution first)
+            List of dask arrays, one per pyramid level (highest res first)
 
         Raises
         ------
@@ -1287,7 +1287,7 @@ def imaris_to_zarr_parallel(
     enables horizontal scaling across multiple workers in a distributed
     environment (e.g., SLURM cluster with Dask).
 
-    The output is a 5D OME-NGFF compliant Zarr store with shape (T, C, Z, Y, X).
+    The output is a 5D OME-NGFF compliant Zarr store with shape (T,C,Z,Y,X).
     Multiscale pyramid levels are generated using TensorStore's downsample
     driver for efficient streaming downsampling of large datasets.
 
@@ -1576,14 +1576,14 @@ def imaris_to_zarr_translate_pyramid(
     max_concurrent_writes: int = 16,
 ) -> str:
     """
-    Convert an Imaris file to OME-Zarr v3 by directly translating existing pyramids.
+    Convert Imaris file to OME-Zarr v3 by translating existing pyramids.
 
-    This function reads the pre-computed pyramid levels from an Imaris file and
-    writes them directly to Zarr format. This is significantly faster than
-    re-computing downsampled levels, as Imaris files typically contain multiple
-    resolution levels that were pre-computed by the acquisition software.
+    This function reads the pre-computed pyramid levels from an Imaris file
+    and writes them directly to Zarr format. This is significantly faster
+    than re-computing downsampled levels, as Imaris files typically contain
+    multiple resolution levels pre-computed by the acquisition software.
 
-    The output is a 5D OME-NGFF compliant Zarr store with shape (T, C, Z, Y, X).
+    The output is a 5D OME-NGFF compliant Zarr store with shape (T,C,Z,Y,X).
 
     Parameters
     ----------

@@ -1,10 +1,8 @@
 """Tests for ImarisReader"""
 
 import unittest
-from pathlib import Path
-from unittest.mock import MagicMock, Mock, PropertyMock, patch
+from unittest.mock import MagicMock, patch
 
-import dask.array as da
 import h5py
 import numpy as np
 

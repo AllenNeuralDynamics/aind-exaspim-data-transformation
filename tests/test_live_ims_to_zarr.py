@@ -175,7 +175,8 @@ class TestLiveImsToZarr(unittest.TestCase):
     def setUpClass(cls):
         """Set up test fixtures with real data paths"""
         cls.data_dir = Path(
-            "/allen/aind/stage/exaSPIM/exaSPIM_683791-screen_2026-01-26_14-53-41/exaSPIM"
+            "/allen/aind/stage/exaSPIM/"
+            "exaSPIM_683791-screen_2026-01-26_14-53-41/exaSPIM"
         )
         cls.ims_files = list(cls.data_dir.glob("*.ims"))
 
@@ -189,7 +190,7 @@ class TestLiveImsToZarr(unittest.TestCase):
         cpu_count = psutil.cpu_count()
 
         print(f"\n{'='*60}")
-        print(f"=== Live Test Setup ===")
+        print("=== Live Test Setup ===")
         print(f"{'='*60}")
         print(
             f"System: {cpu_count} CPUs, {mem.total / (1024**3):.1f} GB RAM "
@@ -221,7 +222,8 @@ class TestLiveImsToZarr(unittest.TestCase):
 
         self.assertIsInstance(reader, ImarisReader)
         reader.close()
-        print(f"✓ Successfully created ImarisReader")
+
+    print("✓ Successfully created ImarisReader")
 
     def test_imaris_reader_open_and_properties(self):
         """Test opening IMS file and reading basic properties"""
@@ -281,7 +283,7 @@ class TestLiveImsToZarr(unittest.TestCase):
                 n_levels, 0, "Should have at least one resolution level"
             )
 
-            print(f"✓ All properties read successfully")
+            print("✓ All properties read successfully")
 
     def test_imaris_reader_as_dask_array(self):
         """Test loading IMS data as dask array"""
@@ -322,7 +324,9 @@ class TestLiveImsToZarr(unittest.TestCase):
             print(f"  Slice dtype: {slice_data.dtype}")
             print(f"  Slice min/max: {slice_data.min()}/{slice_data.max()}")
 
-            print(f"\n✓ Dask array created and data accessible")
+            if stats.get("elapsed_seconds") is not None:
+                print(f"  Slice compute time: {stats['elapsed_seconds']:.2f}s")
+            print("\n✓ Dask array created and data accessible")
 
     def test_imaris_reader_get_dask_pyramid(self):
         """Test generating multi-resolution pyramid"""
@@ -350,7 +354,7 @@ class TestLiveImsToZarr(unittest.TestCase):
 
             for i, level in enumerate(pyramid):
                 print(
-                    f"  Level {i}: shape={level.shape}, chunks={level.chunksize}"
+                    f"Level {i}: shape={level.shape}, chunks={level.chunksize}"
                 )
                 self.assertEqual(level.ndim, 3)  # ZYX - 3D
 
@@ -363,7 +367,7 @@ class TestLiveImsToZarr(unittest.TestCase):
                             ratio, 1.5, f"Level {i} should be downsampled"
                         )
 
-            print(f"\n✓ Pyramid generated successfully")
+            print("\n✓ Pyramid generated successfully")
 
     @unittest.skip("S3 write test - run manually when needed")
     def test_imaris_to_zarr_writer_single_file(self):
@@ -373,15 +377,13 @@ class TestLiveImsToZarr(unittest.TestCase):
 
         ims_file = self.ims_files[0]
         output_path = self.output_dir
-        # The writer appends stack_name to output_path, defaulting to {stem}.ome.zarr
         expected_zarr_path = output_path / f"{ims_file.stem}.ome.zarr"
 
         print(f"\n{'='*60}")
-        print(f"Testing full conversion pipeline:")
+        print("Testing full conversion pipeline:")
         print(f"{'='*60}")
-        print(
-            f"  Input: {ims_file.name} ({ims_file.stat().st_size / (1024**3):.2f} GB)"
-        )
+        input_size_gb = ims_file.stat().st_size / (1024**3)
+        print(f"  Input: {ims_file.name} ({input_size_gb:.2f} GB)")
         print(f"  Output directory: {output_path}")
         print(f"  Expected zarr: {expected_zarr_path}")
 
@@ -411,7 +413,7 @@ class TestLiveImsToZarr(unittest.TestCase):
             throughput = input_size_gb / stats["elapsed_seconds"]
             print(f"\n  📈 Throughput: {throughput:.2f} GB/s")
             print(
-                f"     Peak memory: {stats.get('memory_mb', {}).get('max', 0):.1f} MB"
+                f"Peak memory: {stats.get('memory_mb', {}).get('max', 0):.1f} MB"
             )
 
         # Verify output
@@ -446,7 +448,7 @@ class TestLiveImsToZarr(unittest.TestCase):
             output_size = result.stdout.strip().split()[0]
             print(f"  Output size: {output_size}")
 
-        print(f"\n✓ Conversion completed successfully")
+    print("\n✓ Conversion completed successfully")
 
     @unittest.skip("S3 write test - run manually when needed")
     def test_imaris_to_zarr_writer_custom_voxel_size(self):
@@ -460,11 +462,10 @@ class TestLiveImsToZarr(unittest.TestCase):
         expected_zarr_path = output_path / custom_stack_name
 
         print(f"\n{'='*60}")
-        print(f"Testing conversion with custom voxel size:")
+        print("Testing conversion with custom voxel size:")
         print(f"{'='*60}")
-        print(
-            f"  Input: {ims_file.name} ({ims_file.stat().st_size / (1024**3):.2f} GB)"
-        )
+        input_size_gb = ims_file.stat().st_size / (1024**3)
+        print(f"  Input: {ims_file.name} ({input_size_gb:.2f} GB)")
 
         custom_voxel_size = [2.0, 1.0, 1.0]  # ZYX in microns
         print(f"  Custom voxel size: {custom_voxel_size}")
@@ -482,7 +483,9 @@ class TestLiveImsToZarr(unittest.TestCase):
             )
 
         self.assertTrue(expected_zarr_path.exists())
-        print(f"\n✓ Conversion with custom voxel size completed")
+        if stats.get("elapsed_seconds") is not None:
+            print(f"  Custom voxel elapsed: {stats['elapsed_seconds']:.2f}s")
+        print("\n✓ Conversion with custom voxel size completed")
 
     def test_process_multiple_files(self):
         """Test processing multiple IMS files (if available)"""
@@ -542,11 +545,10 @@ class TestLiveImsToZarr(unittest.TestCase):
         s3_output_path = f"s3://{s3_bucket}/{s3_prefix}/{stack_name}"
 
         print(f"\n{'='*60}")
-        print(f"Testing TensorStore parallel writer to S3:")
+        print("Testing TensorStore parallel writer to S3:")
         print(f"{'='*60}")
-        print(
-            f"  Input: {ims_file.name} ({ims_file.stat().st_size / (1024**3):.2f} GB)"
-        )
+        input_size_gb = ims_file.stat().st_size / (1024**3)
+        print(f"  Input: {ims_file.name} ({input_size_gb:.2f} GB)")
         print(f"  S3 Output: {s3_output_path}")
 
         # Conversion parameters optimized for S3
@@ -583,11 +585,11 @@ class TestLiveImsToZarr(unittest.TestCase):
             throughput = input_size_gb / stats["elapsed_seconds"]
             print(f"\n  📈 Throughput: {throughput:.2f} GB/s")
             print(
-                f"     Peak memory: {stats.get('memory_mb', {}).get('max', 0):.1f} MB"
+                f"Peak memory: {stats.get('memory_mb', {}).get('max', 0):.1f} MB"
             )
 
         print(f"  Result path: {result_path}")
-        print(f"\n✓ S3 upload completed successfully")
+        print("\n✓ S3 upload completed successfully")
 
         # Verify the upload using boto3
         try:
@@ -603,7 +605,7 @@ class TestLiveImsToZarr(unittest.TestCase):
             )
 
             if "Contents" in response:
-                print(f"\n  📁 S3 Contents (first 10):")
+                print("\n  📁 S3 Contents (first 10):")
                 for obj in response["Contents"][:10]:
                     size_kb = obj["Size"] / 1024
                     print(f"     - {obj['Key']} ({size_kb:.1f} KB)")
@@ -632,11 +634,10 @@ class TestLiveImsToZarr(unittest.TestCase):
         s3_output_path = f"s3://{s3_bucket}/{s3_prefix}/{stack_name}"
 
         print(f"\n{'='*60}")
-        print(f"Testing TensorStore multi-level pyramid to S3:")
+        print("Testing TensorStore multi-level pyramid to S3:")
         print(f"{'='*60}")
-        print(
-            f"  Input: {ims_file.name} ({ims_file.stat().st_size / (1024**3):.2f} GB)"
-        )
+        input_size_gb = ims_file.stat().st_size / (1024**3)
+        print(f"  Input: {ims_file.name} ({input_size_gb:.2f} GB)")
         print(f"  S3 Output: {s3_output_path}")
 
         # Conversion parameters
@@ -673,7 +674,7 @@ class TestLiveImsToZarr(unittest.TestCase):
             throughput = input_size_gb / stats["elapsed_seconds"]
             print(f"\n  📈 Throughput: {throughput:.2f} GB/s")
             print(
-                f"     Peak memory: {stats.get('memory_mb', {}).get('max', 0):.1f} MB"
+                f"Peak memory:{stats.get('memory_mb',{}).get('max',0):.1f} MB"
             )
 
         print(f"  Result path: {result_path}")
@@ -706,7 +707,7 @@ class TestLiveImsToZarr(unittest.TestCase):
         except Exception as e:
             print(f"\n  ⚠ S3 verification error: {e}")
 
-        print(f"\n✓ Multi-level S3 upload completed successfully")
+        print("\n✓ Multi-level S3 upload completed successfully")
 
 
 if __name__ == "__main__":

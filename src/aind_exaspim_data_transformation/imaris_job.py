@@ -131,9 +131,12 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
         """
         with ImarisReader(str(imaris_path)) as reader:
             voxel_size, unit = reader.get_voxel_size()
+            unit_display = unit.decode() if isinstance(unit, bytes) else unit
             logging.info(
-                f"Extracted voxel size from {imaris_path.name}: "
-                f"{voxel_size} {unit.decode() if isinstance(unit, bytes) else unit}"
+                "Extracted voxel size from %s: %s %s",
+                imaris_path.name,
+                voxel_size,
+                unit_display,
             )
             return voxel_size
 
@@ -273,7 +276,9 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
                         channel_name=stack_name,
                         stack_name=f"{stack_name}.ome.zarr",
                         bucket_name=bucket_name,
-                        max_concurrent_writes=self.job_settings.tensorstore_batch_size,
+                        max_concurrent_writes=(
+                            self.job_settings.tensorstore_batch_size
+                        ),
                     )
                 else:
                     # Re-compute pyramid levels using TensorStore downsample
@@ -293,7 +298,9 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
                         channel_name=stack_name,
                         stack_name=f"{stack_name}.ome.zarr",
                         bucket_name=bucket_name,
-                        max_concurrent_writes=self.job_settings.tensorstore_batch_size,
+                        max_concurrent_writes=(
+                            self.job_settings.tensorstore_batch_size
+                        ),
                     )
             else:
                 # Use standard dask-based writer
@@ -321,7 +328,8 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
 
         if not derivatives_path.exists():
             logging.info(
-                f"No derivatives folder found at {derivatives_path}, skipping upload."
+                f"No derivatives folder found at {derivatives_path}, "
+                "skipping upload."
             )
             return
 
