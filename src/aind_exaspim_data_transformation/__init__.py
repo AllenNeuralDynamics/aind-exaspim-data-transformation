@@ -1,6 +1,6 @@
 """Init package"""
 
-__version__ = "0.0.0"
+__version__ = "0.0.1"
 __authors__ = ["Carson Berry"]
 __author_emails__ = [
     "carson.berry@alleninstitute.org",
