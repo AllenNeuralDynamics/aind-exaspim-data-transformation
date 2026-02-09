@@ -16,11 +16,10 @@ from pathlib import Path
 import psutil
 
 from aind_exaspim_data_transformation.compress.imaris_to_zarr import (
-    ImarisReader,
     imaris_to_zarr_parallel,
     imaris_to_zarr_writer,
 )
-
+from aind_exaspim_data_transformation.utils.io_utils import ImarisReader
 
 class ResourceMonitor:
     """Monitor CPU and memory usage during test execution."""
@@ -167,7 +166,7 @@ def timed_operation(
         stats["elapsed_seconds"] = elapsed
 
 
-@unittest.skip("S3 write test - run manually when needed")
+# @unittest.skip("S3 write test - run manually when needed")
 class TestLiveImsToZarr(unittest.TestCase):
     """Live tests using real IMS files from staging area"""
 
@@ -284,6 +283,32 @@ class TestLiveImsToZarr(unittest.TestCase):
             )
 
             print("✓ All properties read successfully")
+
+    # @unittest.skip("S3 write test - run manually when needed")
+    def test_imaris_reader_chunking_strategy(self):
+        """Report Imaris chunking strategy and per-dimension chunk counts"""
+        if not self.ims_files:
+            self.skipTest("No IMS files found in data directory")
+
+        ims_file = self.ims_files[0]
+        print(f"\nChunking strategy for: {ims_file.name}")
+
+        with ImarisReader(str(ims_file)) as reader:
+            shape = reader.get_shape()
+            chunks = reader.get_chunks()
+
+        self.assertEqual(len(shape), 3, "Shape should be 3D (ZYX)")
+        self.assertEqual(len(chunks), 3, "Chunks should be 3D (ZYX)")
+
+        chunk_counts = tuple(
+            (dim + chunk - 1) // chunk for dim, chunk in zip(shape, chunks)
+        )
+        total_chunks = chunk_counts[0] * chunk_counts[1] * chunk_counts[2]
+
+        print(f"  Shape (ZYX): {shape}")
+        print(f"  Chunk size (ZYX): {chunks}")
+        print(f"  Chunk counts (ZYX): {chunk_counts}")
+        print(f"  Total chunks: {total_chunks}")
 
     def test_imaris_reader_as_dask_array(self):
         """Test loading IMS data as dask array"""
