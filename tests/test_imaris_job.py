@@ -489,11 +489,11 @@ class TestImarisCompressionJob(unittest.TestCase):
         mock_write.assert_called_once()
 
     @patch(
-        "aind_exaspim_data_transformation.imaris_job.imaris_to_zarr_parallel"
+        "aind_exaspim_data_transformation.imaris_job.imaris_to_zarr_distributed"
     )
     @patch("aind_exaspim_data_transformation.imaris_job.Path")
     def test_write_stacks_with_tensorstore(
-        self, mock_path_cls, mock_parallel_writer
+        self, mock_path_cls, mock_distributed_writer
     ):
         """Test _write_stacks with use_tensorstore=True"""
         settings_with_tensorstore = ImarisJobSettings(
@@ -503,7 +503,7 @@ class TestImarisCompressionJob(unittest.TestCase):
             partition_to_process=0,
             use_tensorstore=True,
             translate_imaris_pyramid=False,
-            # Use parallel writer, not translator
+            # Use distributed writer, not translator
             chunk_size=[128, 128, 128],
             shard_size=[256, 256, 256],
             downsample_levels=3,
@@ -539,21 +539,20 @@ class TestImarisCompressionJob(unittest.TestCase):
         ):
             job._write_stacks([mock_stack1])
 
-        # Verify parallel writer was called instead of standard writer
-        mock_parallel_writer.assert_called_once()
-        args, kwargs = mock_parallel_writer.call_args
+        # Verify distributed writer was called instead of standard writer
+        mock_distributed_writer.assert_called_once()
+        args, kwargs = mock_distributed_writer.call_args
         self.assertEqual(kwargs["imaris_path"], "/fake/input/stack1.ims")
         self.assertEqual(kwargs["voxel_size"], [1.0, 0.5, 0.5])
         self.assertEqual(kwargs["chunk_shape"], (128, 128, 128))
         self.assertEqual(kwargs["shard_shape"], (256, 256, 256))
-        self.assertEqual(kwargs["max_concurrent_writes"], 8)
 
     @patch(
-        "aind_exaspim_data_transformation.imaris_job.imaris_to_zarr_parallel"
+        "aind_exaspim_data_transformation.imaris_job.imaris_to_zarr_distributed"
     )
     @patch("aind_exaspim_data_transformation.imaris_job.Path")
     def test_write_stacks_tensorstore_with_s3(
-        self, mock_path_cls, mock_parallel_writer
+        self, mock_path_cls, mock_distributed_writer
     ):
         """Test _write_stacks with TensorStore and S3 output"""
         settings = ImarisJobSettings(
@@ -564,7 +563,7 @@ class TestImarisCompressionJob(unittest.TestCase):
             partition_to_process=0,
             use_tensorstore=True,
             translate_imaris_pyramid=False,
-            # Use parallel writer, not translator
+            # Use distributed writer, not translator
         )
         job = ImarisCompressionJob(job_settings=settings)
 
@@ -592,8 +591,8 @@ class TestImarisCompressionJob(unittest.TestCase):
         ):
             job._write_stacks([mock_stack1])
 
-        mock_parallel_writer.assert_called_once()
-        args, kwargs = mock_parallel_writer.call_args
+        mock_distributed_writer.assert_called_once()
+        args, kwargs = mock_distributed_writer.call_args
         self.assertEqual(kwargs["bucket_name"], "my-bucket")
 
 

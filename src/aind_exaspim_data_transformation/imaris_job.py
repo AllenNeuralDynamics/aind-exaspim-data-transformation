@@ -13,11 +13,12 @@ from aind_data_transformation.core import GenericEtl, JobResponse, get_parser
 from packaging import version
 
 from aind_exaspim_data_transformation.compress.imaris_to_zarr import (
-    ImarisReader,
+    imaris_to_zarr_distributed,
     imaris_to_zarr_parallel,
     imaris_to_zarr_translate_pyramid,
     imaris_to_zarr_writer,
 )
+from aind_exaspim_data_transformation.utils.io_utils import ImarisReader
 from aind_exaspim_data_transformation.models import (
     CompressorName,
     ImarisJobSettings,
@@ -259,7 +260,8 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
             logging.info(msg)
 
             if self.job_settings.use_tensorstore:
-                # Use TensorStore-based parallel writer (Zarr v3 with sharding)
+                # Use TensorStore-based distributed writer (Zarr v3 with sharding)
+                # Each worker independently reads and writes one shard at a time
                 if self.job_settings.translate_imaris_pyramid:
                     # Translate existing Imaris pyramid levels (faster)
                     logging.info(
@@ -281,27 +283,59 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
                         ),
                     )
                 else:
-                    # Re-compute pyramid levels using TensorStore downsample
+                    # Use distributed worker-centric processing
+                    # Each worker reads one shard from Imaris and writes it
+                    dask_client = None
+                    dask_cluster = None
+                    
+                    if self.job_settings.dask_workers > 0:
+                        try:
+                            from dask.distributed import Client, LocalCluster
+                            
+                            logging.info(
+                                f"Creating Dask cluster with "
+                                f"{self.job_settings.dask_workers} workers"
+                            )
+                            dask_cluster = LocalCluster(
+                                n_workers=self.job_settings.dask_workers,
+                                threads_per_worker=1,
+                            )
+                            dask_client = Client(dask_cluster)
+                            logging.info(
+                                f"Dask dashboard: {dask_client.dashboard_link}"
+                            )
+                        except ImportError:
+                            logging.warning(
+                                "dask.distributed not available, "
+                                "falling back to sequential processing"
+                            )
+                    
                     logging.info(
-                        "Using TensorStore parallel writer "
-                        "(re-computing pyramid levels)"
+                        "Using distributed worker-centric writer "
+                        f"(shard-per-worker, workers={self.job_settings.dask_workers})"
                     )
-                    imaris_to_zarr_parallel(
-                        imaris_path=str(stack),
-                        output_path=str(output_path),
-                        voxel_size=voxel_size_zyx,
-                        chunk_shape=tuple(self.job_settings.chunk_size),
-                        shard_shape=tuple(self.job_settings.shard_size),
-                        n_lvls=self.job_settings.downsample_levels,
-                        scale_factor=tuple(self.job_settings.scale_factor),
-                        downsample_mode=self.job_settings.downsample_mode,
-                        channel_name=stack_name,
-                        stack_name=f"{stack_name}.ome.zarr",
-                        bucket_name=bucket_name,
-                        max_concurrent_writes=(
-                            self.job_settings.tensorstore_batch_size
-                        ),
-                    )
+                    
+                    try:
+                        imaris_to_zarr_distributed(
+                            imaris_path=str(stack),
+                            output_path=str(output_path),
+                            voxel_size=voxel_size_zyx,
+                            chunk_shape=tuple(self.job_settings.chunk_size),
+                            shard_shape=tuple(self.job_settings.shard_size),
+                            n_lvls=self.job_settings.downsample_levels,
+                            scale_factor=tuple(self.job_settings.scale_factor),
+                            downsample_mode=self.job_settings.downsample_mode,
+                            channel_name=stack_name,
+                            stack_name=f"{stack_name}.ome.zarr",
+                            bucket_name=bucket_name,
+                            dask_client=dask_client,
+                        )
+                    finally:
+                        # Clean up Dask resources
+                        if dask_client is not None:
+                            dask_client.close()
+                        if dask_cluster is not None:
+                            dask_cluster.close()
             else:
                 # Use standard dask-based writer
                 imaris_to_zarr_writer(

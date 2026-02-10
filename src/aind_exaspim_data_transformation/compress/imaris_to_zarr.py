@@ -1560,7 +1560,7 @@ def imaris_to_zarr_distributed(
 
     # Set defaults - larger shards for distributed processing
     if chunk_shape is None:
-        chunk_shape = (128, 128, 128)
+        chunk_shape = (128, 256, 256)
     if shard_shape is None:
         shard_shape = (512, 512, 512)  # ~256MB for uint16
     if stack_name is None:
