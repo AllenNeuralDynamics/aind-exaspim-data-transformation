@@ -394,7 +394,7 @@ class TestLiveImsToZarr(unittest.TestCase):
 
             print("\n✓ Pyramid generated successfully")
 
-    @unittest.skip("S3 write test - run manually when needed")
+    # @unittest.skip("S3 write test - run manually when needed")
     def test_imaris_to_zarr_writer_single_file(self):
         """Test full conversion pipeline: IMS -> Zarr with single file"""
         if not self.ims_files:
@@ -474,7 +474,7 @@ class TestLiveImsToZarr(unittest.TestCase):
 
     print("\n✓ Conversion completed successfully")
 
-    @unittest.skip("S3 write test - run manually when needed")
+    # @unittest.skip("S3 write test - run manually when needed")
     def test_imaris_to_zarr_writer_custom_voxel_size(self):
         """Test conversion with custom voxel size override"""
         if not self.ims_files:
