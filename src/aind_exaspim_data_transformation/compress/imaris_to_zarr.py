@@ -16,15 +16,18 @@ imaris_to_zarr_writer
 """
 
 from __future__ import annotations
-
+import time
 import asyncio
 import logging
 import math
 import multiprocessing
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
+import json
 
 import dask.array as da
+from dask.distributed import as_completed
+
 import h5py
 
 # noqa: F401 - registers HDF5 compression filters (LZ4, etc.)
@@ -416,7 +419,6 @@ def process_single_shard(
     ...     data_shape=(768, 2688, 3584),
     ... )
     """
-    import time
 
     start_time = time.perf_counter()
 
@@ -1662,7 +1664,6 @@ def imaris_to_zarr_distributed(
         ]
 
         # Wait for all tasks and collect results
-        from dask.distributed import as_completed
 
         completed = 0
         total_bytes = 0
@@ -1743,7 +1744,6 @@ def _write_zarr_metadata(
     is_s3 : bool
         Whether the store is on S3
     """
-    import json
 
     if is_s3:
         # Use TensorStore to write to S3
