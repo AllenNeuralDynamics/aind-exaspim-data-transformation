@@ -595,6 +595,362 @@ class TestImarisCompressionJob(unittest.TestCase):
         args, kwargs = mock_distributed_writer.call_args
         self.assertEqual(kwargs["bucket_name"], "my-bucket")
 
+    @patch(
+        "aind_exaspim_data_transformation.imaris_job.imaris_to_zarr_translate_pyramid"
+    )
+    @patch("aind_exaspim_data_transformation.imaris_job.Path")
+    def test_write_stacks_with_translate_pyramid(
+        self, mock_path_cls, mock_translate_writer
+    ):
+        """Test _write_stacks with translate_imaris_pyramid=True"""
+        settings = ImarisJobSettings(
+            input_source="/fake/input",
+            output_directory="/fake/output",
+            num_of_partitions=1,
+            partition_to_process=0,
+            use_tensorstore=True,
+            translate_imaris_pyramid=True,  # Use translator
+            chunk_size=[128, 128, 128],
+            shard_size=[256, 256, 256],
+            downsample_levels=3,
+            tensorstore_batch_size=16,
+        )
+        job = ImarisCompressionJob(job_settings=settings)
+
+        mock_stack1 = MagicMock()
+        mock_stack1.stem = "stack1"
+        mock_stack1.__str__ = lambda x: "/fake/input/stack1.ims"
+
+        mock_acq_path = MagicMock()
+        mock_acq_path.exists.return_value = False
+
+        mock_input_path = MagicMock()
+        mock_input_path.joinpath.return_value = mock_acq_path
+
+        mock_output_path = MagicMock()
+
+        def path_side_effect(arg):
+            if arg == "/fake/input":
+                return mock_input_path
+            elif arg == "/fake/output":
+                return mock_output_path
+            return MagicMock()
+
+        mock_path_cls.side_effect = path_side_effect
+
+        with patch.object(
+            job, "_get_voxel_size_from_imaris", return_value=[1.0, 0.5, 0.5]
+        ):
+            job._write_stacks([mock_stack1])
+
+        # Verify translate writer was called
+        mock_translate_writer.assert_called_once()
+        args, kwargs = mock_translate_writer.call_args
+        self.assertEqual(kwargs["imaris_path"], "/fake/input/stack1.ims")
+        self.assertEqual(kwargs["max_concurrent_writes"], 16)
+
+    @patch("aind_exaspim_data_transformation.imaris_job.imaris_to_zarr_writer")
+    @patch("aind_exaspim_data_transformation.imaris_job.Path")
+    def test_write_stacks_acquisition_json_error(
+        self, mock_path_cls, mock_writer
+    ):
+        """Test _write_stacks handles acquisition.json read error gracefully"""
+        job = ImarisCompressionJob(job_settings=self.test_settings)
+
+        mock_stack1 = MagicMock()
+        mock_stack1.stem = "stack1"
+        mock_stack1.__str__ = lambda x: "/fake/input/stack1.ims"
+
+        # Mock acquisition.json exists but raises error when reading
+        mock_acq_path = MagicMock()
+        mock_acq_path.exists.return_value = True
+
+        mock_input_path = MagicMock()
+        mock_input_path.joinpath.return_value = mock_acq_path
+
+        mock_output_path = MagicMock()
+
+        def path_side_effect(arg):
+            if arg == "/fake/input":
+                return mock_input_path
+            elif arg == "/fake/output":
+                return mock_output_path
+            return MagicMock()
+
+        mock_path_cls.side_effect = path_side_effect
+
+        # Make _get_voxel_resolution raise an exception
+        with patch.object(
+            ImarisCompressionJob,
+            "_get_voxel_resolution",
+            side_effect=ValueError("Invalid JSON"),
+        ):
+            with patch.object(
+                job, "_get_voxel_size_from_imaris", return_value=[1.0, 0.5, 0.5]
+            ):
+                # Should not raise - falls back to extracting from imaris file
+                job._write_stacks([mock_stack1])
+
+        mock_writer.assert_called_once()
+
+    @patch(
+        "aind_exaspim_data_transformation.imaris_job.imaris_to_zarr_distributed"
+    )
+    @patch("aind_exaspim_data_transformation.imaris_job.Path")
+    def test_write_stacks_with_dask_workers(
+        self, mock_path_cls, mock_distributed_writer
+    ):
+        """Test _write_stacks creates Dask cluster when dask_workers > 0"""
+        settings = ImarisJobSettings(
+            input_source="/fake/input",
+            output_directory="/fake/output",
+            num_of_partitions=1,
+            partition_to_process=0,
+            use_tensorstore=True,
+            translate_imaris_pyramid=False,
+            dask_workers=4,  # Request 4 workers
+        )
+        job = ImarisCompressionJob(job_settings=settings)
+
+        mock_stack1 = MagicMock()
+        mock_stack1.stem = "stack1"
+        mock_stack1.__str__ = lambda x: "/fake/input/stack1.ims"
+
+        mock_acq_path = MagicMock()
+        mock_acq_path.exists.return_value = False
+
+        mock_input_path = MagicMock()
+        mock_input_path.joinpath.return_value = mock_acq_path
+
+        mock_output_path = MagicMock()
+
+        def path_side_effect(arg):
+            if arg == "/fake/input":
+                return mock_input_path
+            elif arg == "/fake/output":
+                return mock_output_path
+            return MagicMock()
+
+        mock_path_cls.side_effect = path_side_effect
+
+        # Mock Dask client and cluster
+        mock_client = MagicMock()
+        mock_client.dashboard_link = "http://localhost:8787"
+        mock_cluster = MagicMock()
+
+        with patch.object(
+            job, "_get_voxel_size_from_imaris", return_value=[1.0, 0.5, 0.5]
+        ):
+            # Mock the dask.distributed imports inside the function
+            with patch.dict(
+                "sys.modules",
+                {
+                    "dask.distributed": MagicMock(
+                        Client=MagicMock(return_value=mock_client),
+                        LocalCluster=MagicMock(return_value=mock_cluster),
+                    )
+                },
+            ):
+                job._write_stacks([mock_stack1])
+
+        # Verify distributed writer was called with dask_client
+        mock_distributed_writer.assert_called_once()
+        args, kwargs = mock_distributed_writer.call_args
+        self.assertEqual(kwargs["dask_client"], mock_client)
+
+        # Verify cleanup
+        mock_client.close.assert_called_once()
+        mock_cluster.close.assert_called_once()
+
+    @patch(
+        "aind_exaspim_data_transformation.imaris_job.imaris_to_zarr_distributed"
+    )
+    @patch("aind_exaspim_data_transformation.imaris_job.Path")
+    def test_write_stacks_dask_import_error(
+        self, mock_path_cls, mock_distributed_writer
+    ):
+        """Test _write_stacks handles missing dask.distributed gracefully"""
+        settings = ImarisJobSettings(
+            input_source="/fake/input",
+            output_directory="/fake/output",
+            num_of_partitions=1,
+            partition_to_process=0,
+            use_tensorstore=True,
+            translate_imaris_pyramid=False,
+            dask_workers=4,  # Request workers but dask not available
+        )
+        job = ImarisCompressionJob(job_settings=settings)
+
+        mock_stack1 = MagicMock()
+        mock_stack1.stem = "stack1"
+        mock_stack1.__str__ = lambda x: "/fake/input/stack1.ims"
+
+        mock_acq_path = MagicMock()
+        mock_acq_path.exists.return_value = False
+
+        mock_input_path = MagicMock()
+        mock_input_path.joinpath.return_value = mock_acq_path
+
+        mock_output_path = MagicMock()
+
+        def path_side_effect(arg):
+            if arg == "/fake/input":
+                return mock_input_path
+            elif arg == "/fake/output":
+                return mock_output_path
+            return MagicMock()
+
+        mock_path_cls.side_effect = path_side_effect
+
+        with patch.object(
+            job, "_get_voxel_size_from_imaris", return_value=[1.0, 0.5, 0.5]
+        ):
+            # Simulate ImportError for dask.distributed
+            import builtins
+            original_import = builtins.__import__
+
+            def mock_import(name, *args, **kwargs):
+                if "dask.distributed" in name:
+                    raise ImportError("No module named dask.distributed")
+                return original_import(name, *args, **kwargs)
+
+            with patch.object(builtins, "__import__", side_effect=mock_import):
+                job._write_stacks([mock_stack1])
+
+        # Should still call distributed writer, just with dask_client=None
+        mock_distributed_writer.assert_called_once()
+        args, kwargs = mock_distributed_writer.call_args
+        self.assertIsNone(kwargs["dask_client"])
+
+    @patch("aind_exaspim_data_transformation.imaris_job.time")
+    def test_run_job_partition_not_zero(self, mock_time):
+        """Test run_job doesn't upload derivatives for partition != 0"""
+        mock_time.return_value = 1000.0
+
+        settings = ImarisJobSettings(
+            input_source="/fake/input",
+            output_directory="/fake/output",
+            num_of_partitions=2,
+            partition_to_process=1,  # Not 0
+        )
+        job = ImarisCompressionJob(job_settings=settings)
+
+        with patch.object(
+            job, "_get_partitioned_list_of_stack_paths"
+        ) as mock_get_list:
+            with patch.object(
+                job, "_upload_derivatives_folder"
+            ) as mock_upload:
+                with patch.object(job, "_write_stacks") as mock_write:
+                    mock_get_list.return_value = [["file1.ims"], ["file2.ims"]]
+
+                    response = job.run_job()
+
+        self.assertEqual(response.status_code, 200)
+        mock_upload.assert_not_called()  # Not called for partition 1
+
+
+class TestJobEntrypoint(unittest.TestCase):
+    """Test suite for job_entrypoint function"""
+
+    @patch("aind_exaspim_data_transformation.imaris_job.ImarisCompressionJob")
+    @patch("aind_exaspim_data_transformation.imaris_job.ImarisJobSettings")
+    @patch("aind_exaspim_data_transformation.imaris_job.get_parser")
+    @patch("aind_exaspim_data_transformation.imaris_job.multiprocessing")
+    def test_job_entrypoint_with_job_settings(
+        self, mock_mp, mock_get_parser, mock_settings_cls, mock_job_cls
+    ):
+        """Test job_entrypoint with --job-settings argument"""
+        from aind_exaspim_data_transformation.imaris_job import job_entrypoint
+
+        mock_parser = MagicMock()
+        mock_args = MagicMock()
+        mock_args.job_settings = (
+            '{"input_source": "/input", "output_directory": "/output", '
+            '"num_of_partitions": 1, "partition_to_process": 0}'
+        )
+        mock_args.config_file = None
+        mock_parser.parse_args.return_value = mock_args
+        mock_get_parser.return_value = mock_parser
+
+        mock_settings = MagicMock()
+        mock_settings_cls.model_validate_json.return_value = mock_settings
+
+        mock_job = MagicMock()
+        mock_job.run_job.return_value = MagicMock(
+            model_dump_json=lambda: '{"status": 200}'
+        )
+        mock_job_cls.return_value = mock_job
+
+        job_entrypoint(["--job-settings", "{}"])
+
+        mock_mp.set_start_method.assert_called_once_with("spawn", force=True)
+        mock_settings_cls.model_validate_json.assert_called_once()
+        mock_job.run_job.assert_called_once()
+
+    @patch("aind_exaspim_data_transformation.imaris_job.ImarisCompressionJob")
+    @patch("aind_exaspim_data_transformation.imaris_job.ImarisJobSettings")
+    @patch("aind_exaspim_data_transformation.imaris_job.get_parser")
+    @patch("aind_exaspim_data_transformation.imaris_job.multiprocessing")
+    def test_job_entrypoint_with_config_file(
+        self, mock_mp, mock_get_parser, mock_settings_cls, mock_job_cls
+    ):
+        """Test job_entrypoint with --config-file argument"""
+        from aind_exaspim_data_transformation.imaris_job import job_entrypoint
+
+        mock_parser = MagicMock()
+        mock_args = MagicMock()
+        mock_args.job_settings = None
+        mock_args.config_file = "/path/to/config.json"
+        mock_parser.parse_args.return_value = mock_args
+        mock_get_parser.return_value = mock_parser
+
+        mock_settings = MagicMock()
+        mock_settings_cls.from_config_file.return_value = mock_settings
+
+        mock_job = MagicMock()
+        mock_job.run_job.return_value = MagicMock(
+            model_dump_json=lambda: '{"status": 200}'
+        )
+        mock_job_cls.return_value = mock_job
+
+        job_entrypoint([])
+
+        mock_settings_cls.from_config_file.assert_called_once_with(
+            "/path/to/config.json"
+        )
+
+    @patch("aind_exaspim_data_transformation.imaris_job.ImarisCompressionJob")
+    @patch("aind_exaspim_data_transformation.imaris_job.ImarisJobSettings")
+    @patch("aind_exaspim_data_transformation.imaris_job.get_parser")
+    @patch("aind_exaspim_data_transformation.imaris_job.multiprocessing")
+    def test_job_entrypoint_with_env_vars(
+        self, mock_mp, mock_get_parser, mock_settings_cls, mock_job_cls
+    ):
+        """Test job_entrypoint with no arguments (env vars)"""
+        from aind_exaspim_data_transformation.imaris_job import job_entrypoint
+
+        mock_parser = MagicMock()
+        mock_args = MagicMock()
+        mock_args.job_settings = None
+        mock_args.config_file = None
+        mock_parser.parse_args.return_value = mock_args
+        mock_get_parser.return_value = mock_parser
+
+        mock_settings = MagicMock()
+        mock_settings_cls.return_value = mock_settings
+
+        mock_job = MagicMock()
+        mock_job.run_job.return_value = MagicMock(
+            model_dump_json=lambda: '{"status": 200}'
+        )
+        mock_job_cls.return_value = mock_job
+
+        job_entrypoint([])
+
+        # Settings created from env vars (no arguments)
+        mock_settings_cls.assert_called_once_with()
+
 
 if __name__ == "__main__":
     unittest.main()
