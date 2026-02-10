@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import math
+
 import dask.array as da
 import h5py
 import hdf5plugin  # noqa: F401
+import numpy as np
 
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
@@ -114,6 +117,239 @@ class ImarisReader:
         use as_dask_array() instead.
         """
         return self._get_dataset(data_path)[:]
+
+    def read_block(
+        self,
+        slices: Tuple[slice, ...],
+        data_path: str = DEFAULT_DATA_PATH,
+    ) -> np.ndarray:
+        """
+        Read a specific block region directly from HDF5.
+
+        This method bypasses dask and reads directly via HDF5 hyperslab
+        selection, which can be more efficient for single-threaded scenarios
+        or when reading specific regions.
+
+        Parameters
+        ----------
+        slices : Tuple[slice, ...]
+            Tuple of slices defining the region to read (Z, Y, X).
+        data_path : str
+            Path to the dataset within the HDF5 file.
+
+        Returns
+        -------
+        np.ndarray
+            NumPy array containing the requested region.
+
+        Examples
+        --------
+        >>> with ImarisReader("image.ims") as reader:
+        ...     block = reader.read_block((slice(0, 256), slice(0, 256), slice(0, 256)))
+        """
+        return self._get_dataset(data_path)[slices]
+
+    def iter_superchunks(
+        self,
+        superchunk_shape: Tuple[int, int, int],
+        yield_shape: Tuple[int, int, int],
+        data_path: str = DEFAULT_DATA_PATH,
+    ) -> Iterator[Tuple[Tuple[slice, ...], np.ndarray]]:
+        """
+        Load superchunks and yield smaller blocks for efficient worker distribution.
+
+        This method optimizes I/O by reading larger contiguous regions (superchunks)
+        aligned to Imaris native chunks, then yielding smaller worker-sized blocks
+        from the loaded data. This amortizes HDF5 overhead and reduces redundant
+        reads when multiple workers need adjacent data.
+
+        Parameters
+        ----------
+        superchunk_shape : Tuple[int, int, int]
+            Shape of the superchunk to load at once (Z, Y, X).
+            Should be a multiple of the native Imaris chunk size (32, 128, 128)
+            for optimal I/O. Typical values: (256, 512, 512) or (512, 512, 512).
+        yield_shape : Tuple[int, int, int]
+            Shape of each block to yield to workers (Z, Y, X).
+            Typically matches the output shard size, e.g., (256, 256, 256).
+            Must evenly divide superchunk_shape in each dimension.
+        data_path : str
+            Path to the dataset within the HDF5 file.
+
+        Yields
+        ------
+        Tuple[Tuple[slice, ...], np.ndarray]
+            A tuple of (global_slices, block_data) where:
+            - global_slices: Slices in the original array coordinates
+            - block_data: NumPy array containing the block data
+
+        Examples
+        --------
+        >>> with ImarisReader("image.ims") as reader:
+        ...     for slices, block in reader.iter_superchunks(
+        ...         superchunk_shape=(256, 512, 512),
+        ...         yield_shape=(256, 256, 256),
+        ...     ):
+        ...         # Process block, write to output at slices
+        ...         output[slices] = block
+
+        Notes
+        -----
+        Memory usage is bounded by superchunk_shape. For a (256, 512, 512)
+        superchunk of uint16 data, memory usage is ~128MB per superchunk.
+
+        The superchunk is read once, then multiple yield_shape blocks are
+        extracted without additional I/O. This is efficient when:
+        - superchunk_shape is aligned to native Imaris chunks (32, 128, 128)
+        - yield_shape divides evenly into superchunk_shape
+        - Multiple workers can process blocks from the same superchunk
+        """
+        dataset = self._get_dataset(data_path)
+        shape = dataset.shape
+
+        # Validate yield_shape divides superchunk_shape
+        for dim, (sc, ys) in enumerate(zip(superchunk_shape, yield_shape)):
+            if sc % ys != 0:
+                raise ValueError(
+                    f"yield_shape[{dim}]={ys} must evenly divide "
+                    f"superchunk_shape[{dim}]={sc}"
+                )
+
+        # Calculate number of superchunks in each dimension
+        n_superchunks = tuple(
+            math.ceil(s / sc) for s, sc in zip(shape, superchunk_shape)
+        )
+
+        # Iterate over superchunks
+        for sz_idx in range(n_superchunks[0]):
+            for sy_idx in range(n_superchunks[1]):
+                for sx_idx in range(n_superchunks[2]):
+                    # Calculate superchunk bounds (global coordinates)
+                    sz_start = sz_idx * superchunk_shape[0]
+                    sy_start = sy_idx * superchunk_shape[1]
+                    sx_start = sx_idx * superchunk_shape[2]
+
+                    sz_end = min(sz_start + superchunk_shape[0], shape[0])
+                    sy_end = min(sy_start + superchunk_shape[1], shape[1])
+                    sx_end = min(sx_start + superchunk_shape[2], shape[2])
+
+                    # Read the superchunk from HDF5
+                    superchunk_slices = (
+                        slice(sz_start, sz_end),
+                        slice(sy_start, sy_end),
+                        slice(sx_start, sx_end),
+                    )
+                    superchunk_data = dataset[superchunk_slices]
+
+                    # Actual superchunk dimensions (may be smaller at edges)
+                    actual_sc_shape = superchunk_data.shape
+
+                    # Calculate number of yield blocks within this superchunk
+                    n_yields = tuple(
+                        math.ceil(s / ys)
+                        for s, ys in zip(actual_sc_shape, yield_shape)
+                    )
+
+                    # Yield blocks from the loaded superchunk
+                    for yz_idx in range(n_yields[0]):
+                        for yy_idx in range(n_yields[1]):
+                            for yx_idx in range(n_yields[2]):
+                                # Local coordinates within superchunk
+                                local_z_start = yz_idx * yield_shape[0]
+                                local_y_start = yy_idx * yield_shape[1]
+                                local_x_start = yx_idx * yield_shape[2]
+
+                                local_z_end = min(
+                                    local_z_start + yield_shape[0],
+                                    actual_sc_shape[0],
+                                )
+                                local_y_end = min(
+                                    local_y_start + yield_shape[1],
+                                    actual_sc_shape[1],
+                                )
+                                local_x_end = min(
+                                    local_x_start + yield_shape[2],
+                                    actual_sc_shape[2],
+                                )
+
+                                # Extract block from superchunk (no I/O)
+                                block_data = superchunk_data[
+                                    local_z_start:local_z_end,
+                                    local_y_start:local_y_end,
+                                    local_x_start:local_x_end,
+                                ]
+
+                                # Global coordinates for output
+                                global_z_start = sz_start + local_z_start
+                                global_y_start = sy_start + local_y_start
+                                global_x_start = sx_start + local_x_start
+
+                                global_slices = (
+                                    slice(global_z_start, global_z_start + block_data.shape[0]),
+                                    slice(global_y_start, global_y_start + block_data.shape[1]),
+                                    slice(global_x_start, global_x_start + block_data.shape[2]),
+                                )
+
+                                yield global_slices, block_data
+
+    def iter_blocks(
+        self,
+        block_shape: Tuple[int, int, int],
+        data_path: str = DEFAULT_DATA_PATH,
+    ) -> Iterator[Tuple[Tuple[slice, ...], np.ndarray]]:
+        """
+        Iterate over the dataset in block-aligned chunks.
+
+        This is a simpler alternative to iter_superchunks that reads
+        one block at a time directly from HDF5. Use this when memory
+        is very constrained or when blocks are processed independently.
+
+        Parameters
+        ----------
+        block_shape : Tuple[int, int, int]
+            Shape of each block to yield (Z, Y, X).
+        data_path : str
+            Path to the dataset within the HDF5 file.
+
+        Yields
+        ------
+        Tuple[Tuple[slice, ...], np.ndarray]
+            A tuple of (slices, block_data) where:
+            - slices: Slices defining the block position in the full array
+            - block_data: NumPy array containing the block data
+
+        Examples
+        --------
+        >>> with ImarisReader("image.ims") as reader:
+        ...     for slices, block in reader.iter_blocks((256, 256, 256)):
+        ...         output[slices] = compress(block)
+        """
+        dataset = self._get_dataset(data_path)
+        shape = dataset.shape
+
+        # Calculate number of blocks in each dimension
+        n_blocks = tuple(
+            math.ceil(s / b) for s, b in zip(shape, block_shape)
+        )
+
+        for z_idx in range(n_blocks[0]):
+            for y_idx in range(n_blocks[1]):
+                for x_idx in range(n_blocks[2]):
+                    z_start = z_idx * block_shape[0]
+                    y_start = y_idx * block_shape[1]
+                    x_start = x_idx * block_shape[2]
+
+                    z_end = min(z_start + block_shape[0], shape[0])
+                    y_end = min(y_start + block_shape[1], shape[1])
+                    x_end = min(x_start + block_shape[2], shape[2])
+
+                    slices = (
+                        slice(z_start, z_end),
+                        slice(y_start, y_end),
+                        slice(x_start, x_end),
+                    )
+
+                    yield slices, dataset[slices]
 
     def get_dask_pyramid(
         self,

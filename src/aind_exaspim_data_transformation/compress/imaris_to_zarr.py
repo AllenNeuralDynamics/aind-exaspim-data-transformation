@@ -263,6 +263,254 @@ def create_scale_spec(
     return spec
 
 
+# =============================================================================
+# Worker-Centric Shard Processing Utilities
+# =============================================================================
+
+
+def compute_shard_grid(
+    data_shape: Tuple[int, ...],
+    shard_shape: Tuple[int, ...],
+) -> Tuple[int, ...]:
+    """
+    Compute the number of shards in each dimension.
+
+    Parameters
+    ----------
+    data_shape : Tuple[int, ...]
+        Shape of the full dataset.
+    shard_shape : Tuple[int, ...]
+        Shape of each shard.
+
+    Returns
+    -------
+    Tuple[int, ...]
+        Number of shards in each dimension (ceiling division).
+
+    Examples
+    --------
+    >>> compute_shard_grid((768, 2688, 3584), (256, 256, 256))
+    (3, 11, 14)
+    """
+    return tuple(math.ceil(d / s) for d, s in zip(data_shape, shard_shape))
+
+
+def shard_index_to_slices(
+    shard_index: Tuple[int, ...],
+    shard_shape: Tuple[int, ...],
+    data_shape: Tuple[int, ...],
+) -> Tuple[slice, ...]:
+    """
+    Convert a shard index to array slices.
+
+    Parameters
+    ----------
+    shard_index : Tuple[int, ...]
+        Index of the shard in the grid (e.g., (0, 1, 2) for Z=0, Y=1, X=2).
+    shard_shape : Tuple[int, ...]
+        Shape of each shard.
+    data_shape : Tuple[int, ...]
+        Shape of the full dataset (for clamping at boundaries).
+
+    Returns
+    -------
+    Tuple[slice, ...]
+        Slices for extracting this shard from the dataset.
+
+    Examples
+    --------
+    >>> shard_index_to_slices((0, 1, 2), (256, 256, 256), (768, 2688, 3584))
+    (slice(0, 256), slice(256, 512), slice(512, 768))
+    """
+    slices = []
+    for idx, (shard_sz, data_sz) in enumerate(zip(shard_shape, data_shape)):
+        start = shard_index[idx] * shard_sz
+        end = min(start + shard_sz, data_sz)
+        slices.append(slice(start, end))
+    return tuple(slices)
+
+
+def enumerate_shard_indices(
+    data_shape: Tuple[int, ...],
+    shard_shape: Tuple[int, ...],
+) -> List[Tuple[int, ...]]:
+    """
+    Generate all shard indices for a dataset.
+
+    Parameters
+    ----------
+    data_shape : Tuple[int, ...]
+        Shape of the full dataset.
+    shard_shape : Tuple[int, ...]
+        Shape of each shard.
+
+    Returns
+    -------
+    List[Tuple[int, ...]]
+        List of all shard indices in row-major (Z, Y, X) order.
+
+    Examples
+    --------
+    >>> enumerate_shard_indices((512, 512, 512), (256, 256, 256))
+    [(0, 0, 0), (0, 0, 1), (0, 1, 0), (0, 1, 1), (1, 0, 0), (1, 0, 1), (1, 1, 0), (1, 1, 1)]
+    """
+    grid = compute_shard_grid(data_shape, shard_shape)
+    indices = []
+    for z in range(grid[0]):
+        for y in range(grid[1]):
+            for x in range(grid[2]):
+                indices.append((z, y, x))
+    return indices
+
+
+def process_single_shard(
+    imaris_path: str,
+    output_spec: Dict[str, Any],
+    shard_index: Tuple[int, int, int],
+    shard_shape: Tuple[int, int, int],
+    data_shape: Tuple[int, int, int],
+    data_path: str = "/DataSet/ResolutionLevel 0/TimePoint 0/Channel 0/Data",
+) -> Dict[str, Any]:
+    """
+    Process a single shard: read from Imaris, write to Zarr.
+
+    This function is designed to be called by distributed workers. Each worker
+    independently reads its assigned shard region from the Imaris file and
+    writes it to the output Zarr store.
+
+    Parameters
+    ----------
+    imaris_path : str
+        Path to the input Imaris file.
+    output_spec : Dict[str, Any]
+        TensorStore specification for the output Zarr store (without create/delete).
+    shard_index : Tuple[int, int, int]
+        Index of the shard to process (Z, Y, X).
+    shard_shape : Tuple[int, int, int]
+        Shape of each shard (Z, Y, X).
+    data_shape : Tuple[int, int, int]
+        Shape of the full dataset (Z, Y, X).
+    data_path : str
+        HDF5 path to the dataset within the Imaris file.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Statistics about the processing:
+        - shard_index: The shard that was processed
+        - bytes_read: Number of bytes read from Imaris
+        - bytes_written: Number of bytes written (uncompressed)
+        - elapsed_seconds: Time taken
+
+    Examples
+    --------
+    >>> # Called by a Dask worker:
+    >>> result = process_single_shard(
+    ...     imaris_path="/data/image.ims",
+    ...     output_spec=zarr_spec,
+    ...     shard_index=(0, 1, 2),
+    ...     shard_shape=(256, 256, 256),
+    ...     data_shape=(768, 2688, 3584),
+    ... )
+    """
+    import time
+    start_time = time.perf_counter()
+
+    # Compute the slices for this shard
+    slices_3d = shard_index_to_slices(shard_index, shard_shape, data_shape)
+
+    # Read the shard data from Imaris
+    with ImarisReader(imaris_path) as reader:
+        block_data = reader.read_block(slices_3d, data_path)
+
+    # Expand to 5D: (Z, Y, X) -> (1, 1, Z, Y, X)
+    block_data_5d = block_data[np.newaxis, np.newaxis, ...]
+
+    # Create 5D slices for writing
+    slices_5d = (slice(0, 1), slice(0, 1)) + slices_3d
+
+    # Open TensorStore and write (use existing store, don't recreate)
+    write_spec = output_spec.copy()
+    write_spec["create"] = False
+    write_spec["delete_existing"] = False
+    write_spec["open"] = True
+
+    store = ts.open(write_spec).result()
+    store[slices_5d].write(block_data_5d).result()
+
+    elapsed = time.perf_counter() - start_time
+    bytes_read = block_data.nbytes
+    bytes_written = block_data_5d.nbytes
+
+    return {
+        "shard_index": shard_index,
+        "bytes_read": bytes_read,
+        "bytes_written": bytes_written,
+        "elapsed_seconds": elapsed,
+        "shape": block_data.shape,
+    }
+
+
+def create_shard_tasks(
+    imaris_path: str,
+    output_spec: Dict[str, Any],
+    data_shape: Tuple[int, int, int],
+    shard_shape: Tuple[int, int, int],
+    data_path: str = "/DataSet/ResolutionLevel 0/TimePoint 0/Channel 0/Data",
+) -> List[Dict[str, Any]]:
+    """
+    Create a list of task definitions for processing all shards.
+
+    This returns task definitions that can be submitted to a distributed
+    scheduler (e.g., Dask, SLURM). Each task is independent and can be
+    executed by any worker.
+
+    Parameters
+    ----------
+    imaris_path : str
+        Path to the input Imaris file.
+    output_spec : Dict[str, Any]
+        TensorStore specification for the output Zarr store.
+    data_shape : Tuple[int, int, int]
+        Shape of the full dataset (Z, Y, X).
+    shard_shape : Tuple[int, int, int]
+        Shape of each shard (Z, Y, X).
+    data_path : str
+        HDF5 path to the dataset within the Imaris file.
+
+    Returns
+    -------
+    List[Dict[str, Any]]
+        List of task definitions, each containing all parameters needed
+        to call process_single_shard().
+
+    Examples
+    --------
+    >>> tasks = create_shard_tasks(
+    ...     imaris_path="/data/image.ims",
+    ...     output_spec=zarr_spec,
+    ...     data_shape=(768, 2688, 3584),
+    ...     shard_shape=(256, 256, 256),
+    ... )
+    >>> # Submit to Dask:
+    >>> futures = [client.submit(process_single_shard, **task) for task in tasks]
+    """
+    shard_indices = enumerate_shard_indices(data_shape, shard_shape)
+    
+    tasks = []
+    for shard_index in shard_indices:
+        tasks.append({
+            "imaris_path": imaris_path,
+            "output_spec": output_spec,
+            "shard_index": shard_index,
+            "shard_shape": shard_shape,
+            "data_shape": data_shape,
+            "data_path": data_path,
+        })
+    
+    return tasks
+
+
 async def create_downsample_dataset(
     dataset_path: str,
     start_scale: int,
@@ -915,6 +1163,7 @@ def imaris_to_zarr_parallel(
     voxel_size: Optional[List[float]] = None,
     chunk_shape: Optional[Tuple[int, int, int]] = None,
     shard_shape: Optional[Tuple[int, int, int]] = None,
+    superchunk_shape: Optional[Tuple[int, int, int]] = None,
     n_lvls: int = 1,
     scale_factor: Tuple[int, int, int] = (2, 2, 2),
     downsample_mode: str = "mean",
@@ -936,6 +1185,8 @@ def imaris_to_zarr_parallel(
     Multiscale pyramid levels are generated using TensorStore's downsample
     driver for efficient streaming downsampling of large datasets.
 
+
+
     Parameters
     ----------
     imaris_path : str
@@ -951,6 +1202,13 @@ def imaris_to_zarr_parallel(
     shard_shape : Optional[Tuple[int, int, int]]
         Shard size for Zarr v3 sharding in (Z, Y, X) order.
         Default is (256, 256, 256). Will be converted to 5D internally.
+    superchunk_shape : Optional[Tuple[int, int, int]]
+        Shape of the superchunk to read from Imaris at once (Z, Y, X).
+        Should be a multiple of the native Imaris chunk size (32, 128, 128)
+        and should be >= shard_shape for efficient I/O. The superchunk is
+        read once, then shard-sized blocks are extracted without additional
+        I/O. Default is 2x shard_shape in each dimension. Memory usage
+        scales with superchunk size (e.g., 512³ uint16 = ~256MB).
     n_lvls : int
         Number of pyramid levels to generate. Default is 1 (base level only).
         For example, n_lvls=5 creates levels 0, 1, 2, 3, 4 with each level
@@ -1009,9 +1267,12 @@ def imaris_to_zarr_parallel(
 
     # Set defaults
     if chunk_shape is None:
-        chunk_shape = (128, 128, 128)
+        chunk_shape = (128, 256, 256)
     if shard_shape is None:
-        shard_shape = (256, 256, 256)
+        shard_shape = (256, 512, 512)
+    # Default superchunk to 2x shard_shape for efficient I/O batching
+    if superchunk_shape is None:
+        superchunk_shape = tuple(s * 2 for s in shard_shape)
     if stack_name is None:
         stack_name = Path(imaris_path).stem + ".ome.zarr"
 
@@ -1089,21 +1350,23 @@ def imaris_to_zarr_parallel(
         # Open TensorStore for writing
         store = ts.open(base_spec).result()
 
-        # Get dask array for base level (using native chunks for reading)
-        dask_array = reader.as_dask_array(
-            data_path=base_path,
-            chunks=native_chunks,
+        # Use superchunk-based reading for optimized I/O
+        # This reads larger contiguous regions aligned to Imaris native chunks,
+        # then yields shard-sized blocks for writing without additional I/O
+        logger.info(
+            f"Using superchunk I/O: superchunk={superchunk_shape}, "
+            f"yield={shard_shape}"
         )
 
-        # Write blocks aligned to shard boundaries (iterate over Z, Y, X)
-        write_shape_3d = shard_shape if shard_shape else chunk_shape
         pending_writes: List[ts.Future] = []
+        block_count = 0
 
-        for block_slices_3d in iter_block_aligned_slices(
-            shape_3d, write_shape_3d
+        for block_slices_3d, block_data_3d in reader.iter_superchunks(
+            superchunk_shape=superchunk_shape,
+            yield_shape=shard_shape,
+            data_path=base_path,
         ):
-            # Read block from source (this triggers dask computation)
-            block_data_3d = dask_array[block_slices_3d].compute()
+            block_count += 1
 
             # Expand to 5D: (Z, Y, X) -> (1, 1, Z, Y, X)
             block_data_5d = block_data_3d[np.newaxis, np.newaxis, ...]
@@ -1131,7 +1394,7 @@ def imaris_to_zarr_parallel(
         for f in pending_writes:
             f.result()
 
-        logger.info("Completed writing base level 0")
+        logger.info(f"Completed writing base level 0 ({block_count} blocks)")
 
     # =========================================================================
     # Generate downsampled pyramid levels (1, 2, 3, ...)
@@ -1166,6 +1429,290 @@ def imaris_to_zarr_parallel(
     )
 
     # Write metadata to zarr.json
+    _write_zarr_metadata(store_path, metadata_dict, is_s3)
+
+    logger.info(f"Successfully wrote {stack_name} with {n_lvls} levels")
+    return store_path
+
+
+# =============================================================================
+# Distributed Worker-Centric Conversion
+# =============================================================================
+
+
+def imaris_to_zarr_distributed(
+    imaris_path: str,
+    output_path: str,
+    voxel_size: Optional[List[float]] = None,
+    chunk_shape: Optional[Tuple[int, int, int]] = None,
+    shard_shape: Optional[Tuple[int, int, int]] = None,
+    n_lvls: int = 1,
+    scale_factor: Tuple[int, int, int] = (2, 2, 2),
+    downsample_mode: str = "mean",
+    channel_name: Optional[str] = None,
+    stack_name: Optional[str] = None,
+    codec: str = "zstd",
+    codec_level: int = 3,
+    bucket_name: Optional[str] = None,
+    dask_client: Optional[Any] = None,
+) -> str:
+    """
+    Convert an Imaris file to OME-Zarr using distributed shard-per-worker processing.
+
+    This function is optimized for large-scale distributed processing where each
+    worker independently reads and writes exactly one shard at a time. This design:
+    
+    - Minimizes memory per worker (only one shard in memory at a time)
+    - Maximizes parallelism (workers don't compete for reads or writes)
+    - Scales to 32-64+ workers without coordination overhead
+    - Supports large shards (1GB+) for better compression
+
+        Workers independently read their shard regions and write
+         ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+         │  Worker 0    │  │  Worker 1    │  │  Worker N    │
+         │  Shard [0,0] │  │  Shard [0,1] │  │  Shard [x,y] │
+         │  - Read 1GB  │  │  - Read 1GB  │  │  - Read 1GB  │
+         │  - Write 1GB │  │  - Write 1GB │  │  - Write 1GB │
+         └──────────────┘  └──────────────┘  └──────────────┘
+              │                  │                  │
+              └──────────────────┼──────────────────┘
+                                 ▼
+                          Shared Zarr Store
+
+    Parameters
+    ----------
+    imaris_path : str
+        Path to the input Imaris file (.ims or .h5).
+    output_path : str
+        Directory where the output OME-Zarr will be written.
+    voxel_size : Optional[List[float]]
+        Voxel size in [Z, Y, X] order in micrometers.
+        If None, extracted from Imaris metadata.
+    chunk_shape : Optional[Tuple[int, int, int]]
+        Inner chunk size for compression in (Z, Y, X) order.
+        Default is (128, 128, 128).
+    shard_shape : Optional[Tuple[int, int, int]]
+        Shard size (file granularity) in (Z, Y, X) order.
+        Default is (512, 512, 512) for ~256MB shards with uint16.
+        Use larger shards (e.g., 1024³) for better compression.
+    n_lvls : int
+        Number of pyramid levels to generate. Default is 1.
+    scale_factor : Tuple[int, int, int]
+        Downsample factors for (Z, Y, X) dimensions. Default is (2, 2, 2).
+    downsample_mode : str
+        Downsampling method. Default is "mean".
+    channel_name : Optional[str]
+        Name for the channel in metadata.
+    stack_name : Optional[str]
+        Name for the output zarr store.
+    codec : str
+        Compression codec. Default is "zstd".
+    codec_level : int
+        Compression level. Default is 3.
+    bucket_name : Optional[str]
+        S3 bucket name for cloud storage. If None, writes locally.
+    dask_client : Optional[Any]
+        Dask distributed client. If None, processes sequentially (useful for testing).
+
+    Returns
+    -------
+    str
+        Path to the created OME-Zarr store.
+
+    Notes
+    -----
+    **Distributed Execution Model:**
+    
+    1. Scheduler (this function) creates the output Zarr structure
+    2. Scheduler computes list of shard tasks
+    3. Each task is submitted to a worker
+    4. Workers independently:
+       - Open the Imaris file (shared read access)
+       - Read their assigned shard region
+       - Write to their shard in the output store
+    5. Scheduler waits for all tasks, then writes metadata
+
+    **Memory Usage:**
+    
+    Each worker holds at most one shard in memory. For 512³ uint16 shards,
+    this is ~256MB per worker. For 1024³ shards, ~2GB per worker.
+
+    **Scaling:**
+    
+    The number of parallel workers is limited only by:
+    - Imaris file read bandwidth (typically network/disk limited)
+    - Output store write bandwidth (S3 or filesystem)
+    - Number of shards in the dataset
+
+    Examples
+    --------
+    >>> from dask.distributed import Client
+    >>> client = Client(n_workers=32)
+    >>> imaris_to_zarr_distributed(
+    ...     imaris_path="input.ims",
+    ...     output_path="/data/output",
+    ...     shard_shape=(512, 512, 512),  # ~256MB per shard
+    ...     bucket_name="my-bucket",
+    ...     dask_client=client,
+    ... )
+    """
+    logger.info(f"Starting distributed Imaris to Zarr conversion: {imaris_path}")
+
+    # Set defaults - larger shards for distributed processing
+    if chunk_shape is None:
+        chunk_shape = (128, 128, 128)
+    if shard_shape is None:
+        shard_shape = (512, 512, 512)  # ~256MB for uint16
+    if stack_name is None:
+        stack_name = Path(imaris_path).stem + ".ome.zarr"
+
+    # Convert 3D shapes to 5D (T, C, Z, Y, X)
+    chunk_shape_5d = (1, 1) + tuple(chunk_shape)
+    shard_shape_5d = (1, 1) + tuple(shard_shape)
+
+    def _data_path(level: int) -> str:
+        return f"/DataSet/ResolutionLevel {level}/TimePoint 0/Channel 0/Data"
+
+    # =========================================================================
+    # Step 1: Read metadata and create output structure
+    # =========================================================================
+    with ImarisReader(imaris_path) as reader:
+        if voxel_size is None:
+            voxel_size, unit = reader.get_voxel_size()
+            logger.info(f"Extracted voxel size: {voxel_size} {unit}")
+
+        base_path = _data_path(0)
+        shape_3d = reader.get_shape(base_path)
+        dtype = reader.get_dtype(base_path)
+        native_chunks = reader.get_chunks(base_path)
+
+    shape_5d = (1, 1) + tuple(shape_3d)
+
+    logger.info(f"Image shape (Z, Y, X): {shape_3d}")
+    logger.info(f"Native HDF5 chunks: {native_chunks}")
+    logger.info(f"Output shard shape: {shard_shape}")
+    logger.info(f"Output chunk shape: {chunk_shape}")
+
+    # Compute shard grid
+    shard_grid = compute_shard_grid(shape_3d, shard_shape)
+    total_shards = shard_grid[0] * shard_grid[1] * shard_grid[2]
+    logger.info(f"Shard grid: {shard_grid} = {total_shards} total shards")
+
+    # Prepare output path
+    output_zarr_path = Path(output_path) / stack_name
+    is_s3 = bucket_name is not None
+
+    if is_s3:
+        store_path = f"s3://{bucket_name}/{output_zarr_path}"
+        dataset_path = str(output_zarr_path)
+        logger.info(f"Writing to S3: {store_path}")
+    else:
+        store_path = str(output_zarr_path)
+        dataset_path = store_path
+        output_zarr_path.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Writing to local: {store_path}")
+
+    # =========================================================================
+    # Step 2: Create the output Zarr structure (done by scheduler only)
+    # =========================================================================
+    logger.info(f"Creating output Zarr structure: shape={shape_5d}")
+
+    base_spec = create_scale_spec(
+        output_path=dataset_path,
+        data_shape=shape_5d,
+        data_dtype=str(dtype),
+        shard_shape=shard_shape_5d,
+        chunk_shape=chunk_shape_5d,
+        scale=0,
+        codec=codec,
+        codec_level=codec_level,
+        bucket_name=bucket_name,
+    )
+
+    # Create the store (this creates the zarr structure)
+    store = ts.open(base_spec).result()
+    logger.info("Created output Zarr structure")
+
+    # =========================================================================
+    # Step 3: Create and submit shard tasks
+    # =========================================================================
+    tasks = create_shard_tasks(
+        imaris_path=imaris_path,
+        output_spec=base_spec,
+        data_shape=shape_3d,
+        shard_shape=shard_shape,
+        data_path=base_path,
+    )
+
+    logger.info(f"Created {len(tasks)} shard tasks")
+
+    if dask_client is not None:
+        # Distributed execution with Dask
+        logger.info(f"Submitting {len(tasks)} tasks to Dask cluster")
+        futures = [
+            dask_client.submit(process_single_shard, **task)
+            for task in tasks
+        ]
+
+        # Wait for all tasks and collect results
+        from dask.distributed import as_completed
+        
+        completed = 0
+        total_bytes = 0
+        for future in as_completed(futures):
+            result = future.result()
+            completed += 1
+            total_bytes += result["bytes_written"]
+            if completed % 10 == 0 or completed == len(tasks):
+                logger.info(
+                    f"Progress: {completed}/{len(tasks)} shards "
+                    f"({total_bytes / (1024**3):.2f} GB)"
+                )
+    else:
+        # Sequential execution (for testing)
+        logger.info("No Dask client - processing sequentially")
+        for i, task in enumerate(tasks):
+            result = process_single_shard(**task)
+            logger.info(
+                f"Shard {i+1}/{len(tasks)}: {result['shard_index']} "
+                f"({result['bytes_written'] / (1024**2):.1f} MB in "
+                f"{result['elapsed_seconds']:.2f}s)"
+            )
+
+    logger.info("Completed writing base level 0")
+
+    # =========================================================================
+    # Step 4: Generate downsampled pyramid levels (if requested)
+    # =========================================================================
+    if n_lvls > 1:
+        logger.info(f"Generating {n_lvls - 1} downsampled pyramid levels...")
+
+        create_downsample_levels(
+            dataset_path=dataset_path,
+            base_shape=shape_5d,
+            n_levels=n_lvls,
+            downsample_factor=scale_factor,
+            downsample_mode=downsample_mode,
+            shard_shape=shard_shape_5d,
+            chunk_shape=chunk_shape_5d,
+            codec=codec,
+            codec_level=codec_level,
+            bucket_name=bucket_name,
+        )
+
+    # =========================================================================
+    # Step 5: Write OME-NGFF metadata
+    # =========================================================================
+    metadata_dict = write_ome_ngff_metadata(
+        arr_shape=list(shape_5d),
+        chunk_size=list(chunk_shape_5d),
+        image_name=channel_name or stack_name,
+        n_lvls=n_lvls,
+        scale_factors=scale_factor,
+        voxel_size=tuple(voxel_size),
+        channel_names=[channel_name or stack_name],
+    )
+
     _write_zarr_metadata(store_path, metadata_dict, is_s3)
 
     logger.info(f"Successfully wrote {stack_name} with {n_lvls} levels")
