@@ -1,17 +1,18 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import dask.array as da
 import h5py
 import hdf5plugin  # noqa: F401
 import numpy as np
 
-from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 class MissingDatasetError(FileNotFoundError):
     """Raised when an expected dataset path is absent in the HDF5 file."""
+
 
 class ImarisReader:
     """
@@ -285,9 +286,18 @@ class ImarisReader:
                                 global_x_start = sx_start + local_x_start
 
                                 global_slices = (
-                                    slice(global_z_start, global_z_start + block_data.shape[0]),
-                                    slice(global_y_start, global_y_start + block_data.shape[1]),
-                                    slice(global_x_start, global_x_start + block_data.shape[2]),
+                                    slice(
+                                        global_z_start,
+                                        global_z_start + block_data.shape[0],
+                                    ),
+                                    slice(
+                                        global_y_start,
+                                        global_y_start + block_data.shape[1],
+                                    ),
+                                    slice(
+                                        global_x_start,
+                                        global_x_start + block_data.shape[2],
+                                    ),
                                 )
 
                                 yield global_slices, block_data
@@ -328,9 +338,7 @@ class ImarisReader:
         shape = dataset.shape
 
         # Calculate number of blocks in each dimension
-        n_blocks = tuple(
-            math.ceil(s / b) for s, b in zip(shape, block_shape)
-        )
+        n_blocks = tuple(math.ceil(s / b) for s, b in zip(shape, block_shape))
 
         for z_idx in range(n_blocks[0]):
             for y_idx in range(n_blocks[1]):

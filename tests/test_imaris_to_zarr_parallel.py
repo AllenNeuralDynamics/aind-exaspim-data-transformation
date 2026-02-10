@@ -503,7 +503,7 @@ class TestShardUtilities(unittest.TestCase):
 
         self.assertEqual(slices[0], slice(128, 256))  # Z: 1*128 to 2*128
         self.assertEqual(slices[1], slice(512, 768))  # Y: 2*256 to 3*256
-        self.assertEqual(slices[2], slice(0, 512))    # X: 0*512 to 1*512
+        self.assertEqual(slices[2], slice(0, 512))  # X: 0*512 to 1*512
 
     def test_shard_index_to_slices_edge_case(self):
         """Test shard_index_to_slices handles edge shards correctly."""

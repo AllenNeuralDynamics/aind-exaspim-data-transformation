@@ -16,11 +16,12 @@ from pathlib import Path
 import psutil
 
 from aind_exaspim_data_transformation.compress.imaris_to_zarr import (
+    imaris_to_zarr_distributed,
     imaris_to_zarr_parallel,
     imaris_to_zarr_writer,
-    imaris_to_zarr_distributed,
 )
 from aind_exaspim_data_transformation.utils.io_utils import ImarisReader
+
 
 class ResourceMonitor:
     """Monitor CPU and memory usage during test execution."""
@@ -764,7 +765,10 @@ class TestLiveImsToZarr(unittest.TestCase):
 
         # Calculate expected shards
         import math
-        shard_grid = tuple(math.ceil(s / sh) for s, sh in zip(shape, shard_shape))
+
+        shard_grid = tuple(
+            math.ceil(s / sh) for s, sh in zip(shape, shard_shape)
+        )
         total_shards = shard_grid[0] * shard_grid[1] * shard_grid[2]
         print(f"  Shard grid: {shard_grid} = {total_shards} total shards")
 
@@ -792,7 +796,9 @@ class TestLiveImsToZarr(unittest.TestCase):
         if stats.get("elapsed_seconds", 0) > 0:
             throughput = input_size_gb / stats["elapsed_seconds"]
             print(f"\n  📈 Throughput: {throughput:.2f} GB/s")
-            print(f"  Peak memory: {stats.get('memory_mb', {}).get('max', 0):.1f} MB")
+            print(
+                f"  Peak memory: {stats.get('memory_mb', {}).get('max', 0):.1f} MB"
+            )
 
         print(f"  Result path: {result_path}")
 
@@ -841,7 +847,10 @@ class TestLiveImsToZarr(unittest.TestCase):
             print(f"  Data shape: {shape}")
 
         import math
-        shard_grid = tuple(math.ceil(s / sh) for s, sh in zip(shape, shard_shape))
+
+        shard_grid = tuple(
+            math.ceil(s / sh) for s, sh in zip(shape, shard_shape)
+        )
         total_shards = shard_grid[0] * shard_grid[1] * shard_grid[2]
         print(f"  Shard grid: {shard_grid} = {total_shards} total shards")
 
@@ -869,7 +878,9 @@ class TestLiveImsToZarr(unittest.TestCase):
         if stats.get("elapsed_seconds", 0) > 0:
             throughput = input_size_gb / stats["elapsed_seconds"]
             print(f"\n  📈 Throughput: {throughput:.2f} GB/s")
-            print(f"  Peak memory: {stats.get('memory_mb', {}).get('max', 0):.1f} MB")
+            print(
+                f"  Peak memory: {stats.get('memory_mb', {}).get('max', 0):.1f} MB"
+            )
 
         print(f"  Result path: {result_path}")
 
@@ -890,7 +901,9 @@ class TestLiveImsToZarr(unittest.TestCase):
                 for obj in response["Contents"][:10]:
                     size_kb = obj["Size"] / 1024
                     print(f"     - {obj['Key']} ({size_kb:.1f} KB)")
-                print(f"     ... and {response.get('KeyCount', 0)} total objects")
+                print(
+                    f"     ... and {response.get('KeyCount', 0)} total objects"
+                )
             else:
                 print(f"\n  ⚠ No objects found at {s3_prefix}/{stack_name}/")
 
@@ -960,7 +973,9 @@ class TestLiveImsToZarr(unittest.TestCase):
             if stats.get("elapsed_seconds", 0) > 0:
                 throughput = input_size_gb / stats["elapsed_seconds"]
                 print(f"\n  📈 Throughput: {throughput:.2f} GB/s")
-                print(f"  Peak memory: {stats.get('memory_mb', {}).get('max', 0):.1f} MB")
+                print(
+                    f"  Peak memory: {stats.get('memory_mb', {}).get('max', 0):.1f} MB"
+                )
 
             print(f"  Result path: {result_path}")
             print("\n✓ Distributed Dask conversion completed successfully")

@@ -608,6 +608,7 @@ class TestImarisToZarrParallelNewParams(unittest.TestCase):
         self.assertEqual(params["scale_factor"].default, (2, 2, 2))
         self.assertEqual(params["downsample_mode"].default, "mean")
 
+
 @unittest.skip("S3 write test - run manually when needed")
 class TestLiveDownsamplePyramid(unittest.TestCase):
     """Live integration tests using real IMS files and S3 storage.

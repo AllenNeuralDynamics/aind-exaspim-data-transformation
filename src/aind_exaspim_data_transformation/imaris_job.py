@@ -18,12 +18,12 @@ from aind_exaspim_data_transformation.compress.imaris_to_zarr import (
     imaris_to_zarr_translate_pyramid,
     imaris_to_zarr_writer,
 )
-from aind_exaspim_data_transformation.utils.io_utils import ImarisReader
 from aind_exaspim_data_transformation.models import (
     CompressorName,
     ImarisJobSettings,
 )
 from aind_exaspim_data_transformation.utils import utils
+from aind_exaspim_data_transformation.utils.io_utils import ImarisReader
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "DEBUG"))
 
@@ -287,11 +287,11 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
                     # Each worker reads one shard from Imaris and writes it
                     dask_client = None
                     dask_cluster = None
-                    
+
                     if self.job_settings.dask_workers > 0:
                         try:
                             from dask.distributed import Client, LocalCluster
-                            
+
                             logging.info(
                                 f"Creating Dask cluster with "
                                 f"{self.job_settings.dask_workers} workers"
@@ -309,12 +309,12 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
                                 "dask.distributed not available, "
                                 "falling back to sequential processing"
                             )
-                    
+
                     logging.info(
                         "Using distributed worker-centric writer "
                         f"(shard-per-worker, workers={self.job_settings.dask_workers})"
                     )
-                    
+
                     try:
                         imaris_to_zarr_distributed(
                             imaris_path=str(stack),

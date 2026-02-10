@@ -686,7 +686,9 @@ class TestImarisCompressionJob(unittest.TestCase):
             side_effect=ValueError("Invalid JSON"),
         ):
             with patch.object(
-                job, "_get_voxel_size_from_imaris", return_value=[1.0, 0.5, 0.5]
+                job,
+                "_get_voxel_size_from_imaris",
+                return_value=[1.0, 0.5, 0.5],
             ):
                 # Should not raise - falls back to extracting from imaris file
                 job._write_stacks([mock_stack1])
@@ -807,6 +809,7 @@ class TestImarisCompressionJob(unittest.TestCase):
         ):
             # Simulate ImportError for dask.distributed
             import builtins
+
             original_import = builtins.__import__
 
             def mock_import(name, *args, **kwargs):

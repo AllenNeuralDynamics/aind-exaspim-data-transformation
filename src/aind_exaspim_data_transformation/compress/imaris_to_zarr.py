@@ -33,13 +33,16 @@ import numpy as np
 import tensorstore as ts
 import zarr
 from numcodecs import Blosc
-from aind_exaspim_data_transformation.utils.io_utils import ImarisReader, MissingDatasetError
+
 from aind_exaspim_data_transformation.compress.omezarr_metadata import (
     write_ome_ngff_metadata,
 )
+from aind_exaspim_data_transformation.utils.io_utils import (
+    ImarisReader,
+    MissingDatasetError,
+)
 
-logger = logging.getLogger(__name__) 
-
+logger = logging.getLogger(__name__)
 
 
 # =============================================================================
@@ -414,6 +417,7 @@ def process_single_shard(
     ... )
     """
     import time
+
     start_time = time.perf_counter()
 
     # Compute the slices for this shard
@@ -496,18 +500,20 @@ def create_shard_tasks(
     >>> futures = [client.submit(process_single_shard, **task) for task in tasks]
     """
     shard_indices = enumerate_shard_indices(data_shape, shard_shape)
-    
+
     tasks = []
     for shard_index in shard_indices:
-        tasks.append({
-            "imaris_path": imaris_path,
-            "output_spec": output_spec,
-            "shard_index": shard_index,
-            "shard_shape": shard_shape,
-            "data_shape": data_shape,
-            "data_path": data_path,
-        })
-    
+        tasks.append(
+            {
+                "imaris_path": imaris_path,
+                "output_spec": output_spec,
+                "shard_index": shard_index,
+                "shard_shape": shard_shape,
+                "data_shape": data_shape,
+                "data_path": data_path,
+            }
+        )
+
     return tasks
 
 
@@ -1461,7 +1467,7 @@ def imaris_to_zarr_distributed(
 
     This function is optimized for large-scale distributed processing where each
     worker independently reads and writes exactly one shard at a time. This design:
-    
+
     - Minimizes memory per worker (only one shard in memory at a time)
     - Maximizes parallelism (workers don't compete for reads or writes)
     - Scales to 32-64+ workers without coordination overhead
@@ -1522,7 +1528,7 @@ def imaris_to_zarr_distributed(
     Notes
     -----
     **Distributed Execution Model:**
-    
+
     1. Scheduler (this function) creates the output Zarr structure
     2. Scheduler computes list of shard tasks
     3. Each task is submitted to a worker
@@ -1533,12 +1539,12 @@ def imaris_to_zarr_distributed(
     5. Scheduler waits for all tasks, then writes metadata
 
     **Memory Usage:**
-    
+
     Each worker holds at most one shard in memory. For 512³ uint16 shards,
     this is ~256MB per worker. For 1024³ shards, ~2GB per worker.
 
     **Scaling:**
-    
+
     The number of parallel workers is limited only by:
     - Imaris file read bandwidth (typically network/disk limited)
     - Output store write bandwidth (S3 or filesystem)
@@ -1556,7 +1562,9 @@ def imaris_to_zarr_distributed(
     ...     dask_client=client,
     ... )
     """
-    logger.info(f"Starting distributed Imaris to Zarr conversion: {imaris_path}")
+    logger.info(
+        f"Starting distributed Imaris to Zarr conversion: {imaris_path}"
+    )
 
     # Set defaults - larger shards for distributed processing
     if chunk_shape is None:
@@ -1650,13 +1658,12 @@ def imaris_to_zarr_distributed(
         # Distributed execution with Dask
         logger.info(f"Submitting {len(tasks)} tasks to Dask cluster")
         futures = [
-            dask_client.submit(process_single_shard, **task)
-            for task in tasks
+            dask_client.submit(process_single_shard, **task) for task in tasks
         ]
 
         # Wait for all tasks and collect results
         from dask.distributed import as_completed
-        
+
         completed = 0
         total_bytes = 0
         for future in as_completed(futures):

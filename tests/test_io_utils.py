@@ -4,7 +4,7 @@ import math
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, PropertyMock, patch
 
 import h5py
 import numpy as np
@@ -165,7 +165,9 @@ class TestImarisReaderDataAccess(unittest.TestCase):
     def test_as_array(self, mock_h5py_file):
         """Test as_array method."""
         mock_h5py_file.return_value = self.mock_h5_file
-        test_data = np.random.randint(0, 65535, (64, 128, 256), dtype=np.uint16)
+        test_data = np.random.randint(
+            0, 65535, (64, 128, 256), dtype=np.uint16
+        )
         self.mock_dataset.__getitem__.return_value = test_data
         self.mock_h5_file.__getitem__.return_value = self.mock_dataset
 
@@ -190,7 +192,9 @@ class TestImarisReaderDataAccess(unittest.TestCase):
 
     @patch("aind_exaspim_data_transformation.utils.io_utils.da.from_array")
     @patch("aind_exaspim_data_transformation.utils.io_utils.h5py.File")
-    def test_as_dask_array_native_chunks(self, mock_h5py_file, mock_from_array):
+    def test_as_dask_array_native_chunks(
+        self, mock_h5py_file, mock_from_array
+    ):
         """Test as_dask_array with native chunks."""
         mock_h5py_file.return_value = self.mock_h5_file
         self.mock_h5_file.__getitem__.return_value = self.mock_dataset
@@ -207,7 +211,9 @@ class TestImarisReaderDataAccess(unittest.TestCase):
 
     @patch("aind_exaspim_data_transformation.utils.io_utils.da.from_array")
     @patch("aind_exaspim_data_transformation.utils.io_utils.h5py.File")
-    def test_as_dask_array_explicit_chunks(self, mock_h5py_file, mock_from_array):
+    def test_as_dask_array_explicit_chunks(
+        self, mock_h5py_file, mock_from_array
+    ):
         """Test as_dask_array with explicit chunks."""
         mock_h5py_file.return_value = self.mock_h5_file
         self.mock_h5_file.__getitem__.return_value = self.mock_dataset
@@ -351,7 +357,9 @@ class TestImarisReaderIterBlocks(unittest.TestCase):
         mock_h5py_file.return_value = self.mock_h5_file
 
         # Create a test array
-        test_data = np.arange(64 * 64 * 64, dtype=np.uint16).reshape(64, 64, 64)
+        test_data = np.arange(64 * 64 * 64, dtype=np.uint16).reshape(
+            64, 64, 64
+        )
         mock_dataset = MagicMock()
         mock_dataset.shape = (64, 64, 64)
 
@@ -383,7 +391,9 @@ class TestImarisReaderIterBlocks(unittest.TestCase):
         mock_h5py_file.return_value = self.mock_h5_file
 
         # Non-divisible shape
-        test_data = np.arange(50 * 50 * 50, dtype=np.uint16).reshape(50, 50, 50)
+        test_data = np.arange(50 * 50 * 50, dtype=np.uint16).reshape(
+            50, 50, 50
+        )
         mock_dataset = MagicMock()
         mock_dataset.shape = (50, 50, 50)
 
@@ -439,9 +449,7 @@ class TestImarisReaderIterSuperchunks(unittest.TestCase):
         superchunk_shape = (128, 128, 128)
         yield_shape = (64, 64, 64)
 
-        blocks = list(
-            reader.iter_superchunks(superchunk_shape, yield_shape)
-        )
+        blocks = list(reader.iter_superchunks(superchunk_shape, yield_shape))
 
         # 128/64 = 2 in each dim, so 2x2x2 = 8 blocks
         self.assertEqual(len(blocks), 8)
@@ -492,9 +500,7 @@ class TestImarisReaderIterSuperchunks(unittest.TestCase):
         superchunk_shape = (128, 128, 128)
         yield_shape = (64, 64, 64)
 
-        blocks = list(
-            reader.iter_superchunks(superchunk_shape, yield_shape)
-        )
+        blocks = list(reader.iter_superchunks(superchunk_shape, yield_shape))
 
         # 2x2x2 superchunks, each with 2x2x2 yield blocks = 64 total
         self.assertEqual(len(blocks), 64)
@@ -548,7 +554,9 @@ class TestImarisReaderGetDaskPyramid(unittest.TestCase):
 
     @patch("aind_exaspim_data_transformation.utils.io_utils.da.from_array")
     @patch("aind_exaspim_data_transformation.utils.io_utils.h5py.File")
-    def test_get_dask_pyramid_missing_level(self, mock_h5py_file, mock_from_array):
+    def test_get_dask_pyramid_missing_level(
+        self, mock_h5py_file, mock_from_array
+    ):
         """Test get_dask_pyramid raises error for missing level."""
         mock_h5py_file.return_value = self.mock_h5_file
 
@@ -580,7 +588,9 @@ class TestImarisReaderGetDaskPyramid(unittest.TestCase):
 
     @patch("aind_exaspim_data_transformation.utils.io_utils.da.from_array")
     @patch("aind_exaspim_data_transformation.utils.io_utils.h5py.File")
-    def test_get_dask_pyramid_explicit_chunks(self, mock_h5py_file, mock_from_array):
+    def test_get_dask_pyramid_explicit_chunks(
+        self, mock_h5py_file, mock_from_array
+    ):
         """Test get_dask_pyramid with explicit chunks clamped to level shape."""
         mock_h5py_file.return_value = self.mock_h5_file
 
