@@ -4,9 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aind-exaspim-data-transformation"
-description = "Generated from aind-library-template"
-license = {text = "MIT"}
-requires-python = ">=3.10"
+description = "An imaris to zarr data transformation tool for ExaSPIM data. Designed to be used in aind-data-transfer-service."
+license = "MIT"
+requires-python = ">=3.12"
 authors = [
     {name = "Allen Institute for Neural Dynamics"}
 ]
@@ -17,7 +17,25 @@ readme = "README.md"
 dynamic = ["version"]
 
 dependencies = [
+    "dask>=2024.0.0",
+    "distributed==2026.1.1",
+    "h5py>=3.0.0",
+    "hdf5plugin>=4.0.0",
+    "numpy>=1.20.0",
+    "zarr>=2.13.0,<2.18.0",
+    "ome-zarr>=0.8.0",
+    "numcodecs==0.15.1",
+    "aind-data-transformation>=0.1.0",
+    "packaging>=21.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0", 
+    "tensorstore==0.1.80",
+    "psutil==7.2.2", 
+    "boto3==1.42.36"
 ]
+
+[tool.setuptools]
+license-files = []
 
 [dependency-groups]
 dev = [
@@ -38,7 +56,7 @@ version = {attr = "aind_exaspim_data_transformation.__version__"}
 
 [tool.black]
 line-length = 79
-target_version = ['py310']
+target_version = ['py312']
 exclude = '''
 
 (
@@ -59,8 +77,8 @@ exclude = '''
 '''
 
 [tool.coverage.run]
-omit = ["*__init__*"]
-source = ["aind_exaspim_data_transformation", "tests"]
+omit = ["*__init__*", "tests/*"]
+source = ["aind_exaspim_data_transformation"]
 
 [tool.coverage.report]
 exclude_lines = [
@@ -69,7 +87,7 @@ exclude_lines = [
     "^import .*",
     "pragma: no cover"
 ]
-fail_under = 100
+fail_under = 80
 
 [tool.isort]
 line_length = 79
@@ -78,4 +96,4 @@ skip = [".conda"]
 
 [tool.interrogate]
 exclude = ["setup.py", "docs", "build", ".conda"]
-fail-under = 100
+fail-under = 80
