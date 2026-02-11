@@ -3,9 +3,9 @@
 [![License](https://img.shields.io/badge/license-MIT-brightgreen)](LICENSE)
 ![Code Style](https://img.shields.io/badge/code%20style-black-black)
 [![semantic-release: angular](https://img.shields.io/badge/semantic--release-angular-e10079?logo=semantic-release)](https://github.com/semantic-release/semantic-release)
-![Interrogate](https://img.shields.io/badge/interrogate-100.0%25-brightgreen)
-![Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen)
-![Python](https://img.shields.io/badge/python->=3.10-blue?logo=python)
+![Interrogate](https://img.shields.io/badge/interrogate-92.0%25-brightgreen)
+![Coverage](https://img.shields.io/badge/coverage-87%25-yellow)
+![Python](https://img.shields.io/badge/python->=3.12-blue?logo=python)
 
 ## Usage
  - To use this template, click the green `Use this template` button and `Create new repository`.
