@@ -1013,8 +1013,12 @@ class TestImarisToZarrDistributed(unittest.TestCase):
         "aind_exaspim_data_transformation.compress.imaris_to_zarr.ImarisReader"
     )
     @patch("aind_exaspim_data_transformation.compress.imaris_to_zarr.Path")
+    @patch(
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr.as_completed"
+    )
     def test_distributed_with_dask_client(
         self,
+        mock_as_completed,
         mock_path_cls,
         mock_reader_cls,
         mock_ts_open,
@@ -1062,27 +1066,20 @@ class TestImarisToZarrDistributed(unittest.TestCase):
         }
         mock_client.submit.return_value = mock_future
 
-        # Mock as_completed from dask.distributed
-        mock_as_completed = MagicMock()
+        # Configure mock as_completed to return the mock futures
         mock_as_completed.return_value = iter([mock_future] * 8)
 
-        with patch.dict(
-            "sys.modules",
-            {
-                "dask.distributed": MagicMock(as_completed=mock_as_completed),
-            },
-        ):
-            result = imaris_to_zarr_distributed(
-                imaris_path="/input/test.ims",
-                output_path="/output",
-                chunk_shape=(32, 64, 128),
-                shard_shape=(64, 128, 256),
-                n_lvls=1,
-                channel_name="ch0",
-                stack_name="test.ome.zarr",
-                bucket_name=None,
-                dask_client=mock_client,  # Use Dask
-            )
+        result = imaris_to_zarr_distributed(
+            imaris_path="/input/test.ims",
+            output_path="/output",
+            chunk_shape=(32, 64, 128),
+            shard_shape=(64, 128, 256),
+            n_lvls=1,
+            channel_name="ch0",
+            stack_name="test.ome.zarr",
+            bucket_name=None,
+            dask_client=mock_client,  # Use Dask
+        )
 
         # Verify client.submit was called for each shard
         # Shape (128, 256, 512) with shards (64, 128, 256) = 2x2x2 = 8 shards

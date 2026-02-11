@@ -31,7 +31,7 @@ from dask.distributed import as_completed
 import h5py
 
 # noqa: F401 - registers HDF5 compression filters (LZ4, etc.)
-import hdf5plugin  # noqa: F401
+# import hdf5plugin  # noqa: F401
 import numpy as np
 import tensorstore as ts
 import zarr
