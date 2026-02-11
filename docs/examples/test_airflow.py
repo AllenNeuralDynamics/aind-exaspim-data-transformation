@@ -112,15 +112,6 @@ def _derive_subject_id(path: str) -> str:
         )
     return basename
 
-def create_s3_path(bucket: str, source_dataset_path: str) -> str:
-    """Create an S3 path for the given source dataset."""
-    dataset_name = os.path.basename(os.path.normpath(source_dataset_path))
-
-    if bucket == "open":
-        bucket = "aind-open-data-dev-u5u0i5"
-    return f"s3://{bucket}/{dataset_name}/"
-
-
 def submit_exaspim_job(
     source: str,
     project_name: str = "MSMA Platform",
@@ -154,34 +145,6 @@ def submit_exaspim_job(
     print(f"Memory / CPU      : {mem_mb:,} MB")
     print(f"Timeout           : {timeout_min} min")
 
-    # spim_task = Task(
-    #     image=IMAGE,
-    #     image_version=IMAGE_VERSION,
-    #     image_resources={
-    #         "partition": "aind",
-    #         "qos": "dev", 
-    #         "array": f"0-{num_partitions - 1}",
-    #         "time_limit": {"set": True, "number": timeout_min},
-    #         "memory_per_cpu": {"set": True, "number": mem_mb},
-    #         "minimum_cpus_per_node": CPUS_PER_NODE,
-    #         "comment": "retry 2",
-    #         "minimum_cpus_per_node": 4,
-    #         "standard_error": "/allen/aind/scratch/svc_aind_airflow/dev/logs/%x_%j_error.out",
-    #         "tasks": 1,
-    #         "standard_output": "/allen/aind/scratch/svc_aind_airflow/dev/logs/%x_%j.out",
-    #         "environment": [
-    #             "PATH=/bin:/usr/bin/:/usr/local/bin/",
-    #             "LD_LIBRARY_PATH=/lib/:/lib64/:/usr/local/lib"
-    #         ],
-    #         "maximum_nodes": 1,
-    #         "minimum_nodes": 1,
-    #         "current_working_directory": "."
-    #     },
-    #     job_settings={
-    #         "input_source": source,
-    #         "num_of_partitions": num_partitions,
-    #     },
-    # )
     exaspim_job_settings = {
         "input_source": source,
         "output_directory": "%OUTPUT_LOCATION",
@@ -235,10 +198,6 @@ def submit_exaspim_job(
             "modality_transformation_settings": {
                 Modality.SPIM.abbreviation: custom_exaspim_task,
             },
-                
-            # {
-            #     Modality.SPIM.abbreviation: spim_task,
-            # },
             "check_s3_folder_exists": {"skip_task": True},
             "final_check_s3_folder_exist": {"skip_task": True},
             "check_metadata_files": {"skip_task": True},
