@@ -18,7 +18,7 @@ dynamic = ["version"]
 
 dependencies = [
     "dask>=2024.0.0",
-    "distributed==2026.1.1",
+    "distributed==2026.1.2",
     "h5py>=3.0.0",
     "hdf5plugin>=4.0.0",
     "numpy>=1.20.0",
