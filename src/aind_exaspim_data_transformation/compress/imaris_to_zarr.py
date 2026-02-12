@@ -869,7 +869,18 @@ def imaris_to_zarr_writer(
     if stack_name is None:
         stack_name = Path(imaris_path).stem + ".ome.zarr"
 
-    compressor = Blosc(**compressor_kwargs)
+    # Resolve string shuffle values to Blosc integer constants
+    _shuffle_map = {
+        "noshuffle": Blosc.NOSHUFFLE,
+        "shuffle": Blosc.SHUFFLE,
+        "bitshuffle": Blosc.BITSHUFFLE,
+        "autoshuffle": Blosc.AUTOSHUFFLE,
+    }
+    resolved_kwargs = dict(compressor_kwargs)
+    shuffle_val = resolved_kwargs.get("shuffle")
+    if isinstance(shuffle_val, str) and shuffle_val in _shuffle_map:
+        resolved_kwargs["shuffle"] = _shuffle_map[shuffle_val]
+    compressor = Blosc(**resolved_kwargs)
 
     with ImarisReader(imaris_path) as reader:
         # Get voxel size from file if not provided

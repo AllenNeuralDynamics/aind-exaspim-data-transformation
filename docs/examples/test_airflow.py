@@ -150,6 +150,8 @@ def submit_exaspim_job(
         "output_directory": "%OUTPUT_LOCATION",
         "s3_location": "%S3_LOCATION",
         "num_of_partitions": num_partitions,
+        "use_tensorstore": True,
+        "translate_imaris_pyramid": False,
     }
 
     custom_exaspim_task = Task(
