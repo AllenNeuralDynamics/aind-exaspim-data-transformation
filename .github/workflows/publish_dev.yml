@@ -1,0 +1,50 @@
+name: Tag and publish dev
+
+on:
+  push:
+    branches:
+      - dev
+
+jobs:
+  test:
+    name: Lint and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: python -m pip install -e . --group dev --no-cache-dir
+      - name: Run linter checks
+        run: interrogate --verbose .
+      - name: Run tests and coverage
+        run: coverage run -m unittest discover && coverage report
+
+  publish_dev:
+    name: Build and publish dev image
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set docker tag
+        run: |
+          short_sha=$(echo "${{ github.sha }}" | cut -c1-7)
+          echo "docker_tag=dev-${short_sha}" >> "$GITHUB_ENV"
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+      - name: Login to Github Packages
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build image and push to GitHub Container Registry
+        uses: docker/build-push-action@v3
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/allenneuraldynamics/aind-exaspim-data-transformation:${{ env.docker_tag }}
+            ghcr.io/allenneuraldynamics/aind-exaspim-data-transformation:dev-latest
