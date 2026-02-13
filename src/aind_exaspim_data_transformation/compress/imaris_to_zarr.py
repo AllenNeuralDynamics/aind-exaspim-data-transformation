@@ -16,18 +16,17 @@ imaris_to_zarr_writer
 """
 
 from __future__ import annotations
-import time
+
 import asyncio
+import json
 import logging
 import math
 import multiprocessing
+import time
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Tuple
-import json
+from typing import Any, Dict, Iterator, List, Optional, Tuple, cast
 
 import dask.array as da
-from dask.distributed import as_completed
-
 import h5py
 
 # noqa: F401 - registers HDF5 compression filters (LZ4, etc.)
@@ -35,6 +34,7 @@ import h5py
 import numpy as np
 import tensorstore as ts
 import zarr
+from dask.distributed import as_completed
 from numcodecs import Blosc
 
 from aind_exaspim_data_transformation.compress.omezarr_metadata import (
@@ -275,9 +275,9 @@ def create_scale_spec(
 
 
 def compute_shard_grid(
-    data_shape: Tuple[int, ...],
-    shard_shape: Tuple[int, ...],
-) -> Tuple[int, ...]:
+    data_shape: Tuple[int, int, int],
+    shard_shape: Tuple[int, int, int],
+) -> Tuple[int, int, int]:
     """
     Compute the number of shards in each dimension.
 
@@ -298,13 +298,16 @@ def compute_shard_grid(
     >>> compute_shard_grid((768, 2688, 3584), (256, 256, 256))
     (3, 11, 14)
     """
-    return tuple(math.ceil(d / s) for d, s in zip(data_shape, shard_shape))
+    z = math.ceil(data_shape[0] / shard_shape[0])
+    y = math.ceil(data_shape[1] / shard_shape[1])
+    x = math.ceil(data_shape[2] / shard_shape[2])
+    return (z, y, x)
 
 
 def shard_index_to_slices(
-    shard_index: Tuple[int, ...],
-    shard_shape: Tuple[int, ...],
-    data_shape: Tuple[int, ...],
+    shard_index: Tuple[int, int, int],
+    shard_shape: Tuple[int, int, int],
+    data_shape: Tuple[int, int, int],
 ) -> Tuple[slice, ...]:
     """
     Convert a shard index to array slices.
@@ -337,9 +340,9 @@ def shard_index_to_slices(
 
 
 def enumerate_shard_indices(
-    data_shape: Tuple[int, ...],
-    shard_shape: Tuple[int, ...],
-) -> List[Tuple[int, ...]]:
+    data_shape: Tuple[int, int, int],
+    shard_shape: Tuple[int, int, int],
+) -> List[Tuple[int, int, int]]:
     """
     Generate all shard indices for a dataset.
 
@@ -361,7 +364,7 @@ def enumerate_shard_indices(
     [(0, 0, 0), (0, 0, 1), (0, 1, 0), (0, 1, 1), (1, 0, 0), (1, 0, 1), (1, 1, 0), (1, 1, 1)]
     """
     grid = compute_shard_grid(data_shape, shard_shape)
-    indices = []
+    indices: List[Tuple[int, int, int]] = []
     for z in range(grid[0]):
         for y in range(grid[1]):
             for x in range(grid[2]):
@@ -426,6 +429,8 @@ def process_single_shard(
     slices_3d = shard_index_to_slices(shard_index, shard_shape, data_shape)
 
     # Read the shard data from Imaris
+    shape_3d: Tuple[int, int, int]
+
     with ImarisReader(imaris_path) as reader:
         block_data = reader.read_block(slices_3d, data_path)
 
@@ -463,6 +468,7 @@ def create_shard_tasks(
     data_shape: Tuple[int, int, int],
     shard_shape: Tuple[int, int, int],
     data_path: str = "/DataSet/ResolutionLevel 0/TimePoint 0/Channel 0/Data",
+    shard_indices: Optional[List[Tuple[int, int, int]]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Create a list of task definitions for processing all shards.
@@ -501,10 +507,14 @@ def create_shard_tasks(
     >>> # Submit to Dask:
     >>> futures = [client.submit(process_single_shard, **task) for task in tasks]
     """
-    shard_indices = enumerate_shard_indices(data_shape, shard_shape)
+    shard_indices_list: List[Tuple[int, ...]] = (
+        shard_indices
+        if shard_indices is not None
+        else enumerate_shard_indices(data_shape, shard_shape)
+    )
 
     tasks = []
-    for shard_index in shard_indices:
+    for shard_index in shard_indices_list:
         tasks.append(
             {
                 "imaris_path": imaris_path,
@@ -623,10 +633,12 @@ async def create_downsample_dataset(
     # Open the downsampled view of the source
     downsampled_view = await ts.open(spec=source_with_downsample_spec)
     source_dataset = downsampled_view.base
+    if source_dataset is None:
+        raise ValueError("Downsampled view did not return a base dataset")
 
     # Get properties for the new scale
     new_scale = start_scale + 1
-    downsampled_shape = tuple(downsampled_view.shape)
+    downsampled_shape = tuple(int(x) for x in downsampled_view.shape)
     source_dtype = source_dataset.dtype.name
 
     logger.info(
@@ -869,7 +881,18 @@ def imaris_to_zarr_writer(
     if stack_name is None:
         stack_name = Path(imaris_path).stem + ".ome.zarr"
 
-    compressor = Blosc(**compressor_kwargs)
+    # Resolve string shuffle values to Blosc integer constants
+    _shuffle_map = {
+        "noshuffle": Blosc.NOSHUFFLE,
+        "shuffle": Blosc.SHUFFLE,
+        "bitshuffle": Blosc.BITSHUFFLE,
+        "autoshuffle": Blosc.AUTOSHUFFLE,
+    }
+    resolved_kwargs = dict(compressor_kwargs)
+    shuffle_val = resolved_kwargs.get("shuffle")
+    if isinstance(shuffle_val, str) and shuffle_val in _shuffle_map:
+        resolved_kwargs["shuffle"] = _shuffle_map[shuffle_val]
+    compressor = Blosc(**resolved_kwargs)
 
     with ImarisReader(imaris_path) as reader:
         # Get voxel size from file if not provided
@@ -920,16 +943,17 @@ def imaris_to_zarr_writer(
 
         # Write each pyramid level
         for level_idx, dask_array in enumerate(pyramid):
+            chunk_sizes = tuple(int(c[0]) for c in dask_array.chunks)
             logger.info(
                 f"Writing level {level_idx}: shape={dask_array.shape}, "
-                f"chunks={dask_array.chunksize}"
+                f"chunks={chunk_sizes}"
             )
 
             # Create zarr array for this level
             z_array = root.create_dataset(
                 str(level_idx),
                 shape=dask_array.shape,
-                chunks=dask_array.chunksize,
+                chunks=chunk_sizes,
                 dtype=dask_array.dtype,
                 compressor=compressor,
                 overwrite=True,
@@ -944,8 +968,8 @@ def imaris_to_zarr_writer(
         chunk_size_5d = (1, 1) + tuple(native_chunks)
 
         metadata_dict = write_ome_ngff_metadata(
-            arr_shape=list(shape_5d),
-            chunk_size=list(chunk_size_5d),
+            arr_shape=[int(v) for v in shape_5d],
+            chunk_size=[int(v) for v in chunk_size_5d],
             image_name=channel_name or stack_name,
             n_lvls=actual_n_lvls,
             scale_factors=tuple(scale_factor),
@@ -1144,7 +1168,7 @@ def write_block_to_tensorstore(
     store: ts.TensorStore,
     data: np.ndarray,
     slices: Tuple[slice, ...],
-) -> ts.Future:
+) -> ts.WriteFutures:
     """
     Write a single block to a TensorStore array.
 
@@ -1280,9 +1304,22 @@ def imaris_to_zarr_parallel(
         shard_shape = (256, 512, 512)
     # Default superchunk to 2x shard_shape for efficient I/O batching
     if superchunk_shape is None:
-        superchunk_shape = tuple(s * 2 for s in shard_shape)
+        superchunk_shape = cast(
+            Tuple[int, int, int], tuple(s * 2 for s in shard_shape)
+        )
     if stack_name is None:
         stack_name = Path(imaris_path).stem + ".ome.zarr"
+
+    chunk_shape = cast(
+        Tuple[int, int, int], tuple(int(x) for x in chunk_shape)
+    )
+    shard_shape = cast(
+        Tuple[int, int, int], tuple(int(x) for x in shard_shape)
+    )
+    assert superchunk_shape is not None
+    superchunk_shape = cast(
+        Tuple[int, int, int], tuple(int(x) for x in superchunk_shape)
+    )
 
     # Convert 3D shapes to 5D (T, C, Z, Y, X)
     chunk_shape_5d = (1, 1) + tuple(chunk_shape)
@@ -1304,7 +1341,10 @@ def imaris_to_zarr_parallel(
 
         # Get shape and dtype from base resolution
         base_path = _data_path(0)
-        shape_3d = reader.get_shape(base_path)
+        shape_3d = cast(
+            Tuple[int, int, int],
+            tuple(int(x) for x in reader.get_shape(base_path)),
+        )
         dtype = reader.get_dtype(base_path)
         native_chunks = reader.get_chunks(base_path)
 
@@ -1366,7 +1406,7 @@ def imaris_to_zarr_parallel(
             f"yield={shard_shape}"
         )
 
-        pending_writes: List[ts.Future] = []
+        pending_writes: List[ts.WriteFutures] = []
         block_count = 0
 
         for block_slices_3d, block_data_3d in reader.iter_superchunks(
@@ -1463,6 +1503,10 @@ def imaris_to_zarr_distributed(
     codec_level: int = 3,
     bucket_name: Optional[str] = None,
     dask_client: Optional[Any] = None,
+    shard_indices: Optional[List[Tuple[int, int, int]]] = None,
+    translate_pyramid_levels: bool = False,
+    partition_to_process: int = 0,
+    num_of_partitions: int = 1,
 ) -> str:
     """
     Convert an Imaris file to OME-Zarr using distributed shard-per-worker processing.
@@ -1576,6 +1620,13 @@ def imaris_to_zarr_distributed(
     if stack_name is None:
         stack_name = Path(imaris_path).stem + ".ome.zarr"
 
+    chunk_shape = cast(
+        Tuple[int, int, int], tuple(int(x) for x in chunk_shape)
+    )
+    shard_shape = cast(
+        Tuple[int, int, int], tuple(int(x) for x in shard_shape)
+    )
+
     # Convert 3D shapes to 5D (T, C, Z, Y, X)
     chunk_shape_5d = (1, 1) + tuple(chunk_shape)
     shard_shape_5d = (1, 1) + tuple(shard_shape)
@@ -1604,7 +1655,9 @@ def imaris_to_zarr_distributed(
     logger.info(f"Output chunk shape: {chunk_shape}")
 
     # Compute shard grid
-    shard_grid = compute_shard_grid(shape_3d, shard_shape)
+    shard_grid = compute_shard_grid(
+        cast(Tuple[int, int, int], shape_3d), shard_shape
+    )
     total_shards = shard_grid[0] * shard_grid[1] * shard_grid[2]
     logger.info(f"Shard grid: {shard_grid} = {total_shards} total shards")
 
@@ -1639,31 +1692,46 @@ def imaris_to_zarr_distributed(
         bucket_name=bucket_name,
     )
 
-    # Create the store (this creates the zarr structure)
+    # Allow idempotent create/open across workers
+    base_spec["create"] = True
+    base_spec["open"] = True
+    base_spec["delete_existing"] = False
+
+    # Create or open the store (idempotent across workers)
     store = ts.open(base_spec).result()
-    logger.info("Created output Zarr structure")
+    logger.info("Created/opened output Zarr structure")
+
+    # Small helper for deterministic partitioning
+    def _partition_list(lst: List[Any], num_parts: int) -> List[List[Any]]:
+        parts = [[] for _ in range(num_parts)]
+        for idx, item in enumerate(lst):
+            parts[idx % num_parts].append(item)
+        return parts
 
     # =========================================================================
-    # Step 3: Create and submit shard tasks
+    # Step 3: Create and submit base-level shard tasks (optionally subset)
     # =========================================================================
+    base_shard_indices = shard_indices or enumerate_shard_indices(
+        cast(Tuple[int, int, int], shape_3d), shard_shape
+    )
+
     tasks = create_shard_tasks(
         imaris_path=imaris_path,
         output_spec=base_spec,
-        data_shape=shape_3d,
+        data_shape=cast(Tuple[int, int, int], shape_3d),
         shard_shape=shard_shape,
         data_path=base_path,
+        shard_indices=base_shard_indices,
     )
 
-    logger.info(f"Created {len(tasks)} shard tasks")
+    logger.info(f"Created {len(tasks)} base-level shard tasks")
 
     if dask_client is not None:
-        # Distributed execution with Dask
-        logger.info(f"Submitting {len(tasks)} tasks to Dask cluster")
+        # Distributed execution with Dask (single coordinator)
+        logger.info(f"Submitting {len(tasks)} base shards to Dask cluster")
         futures = [
             dask_client.submit(process_single_shard, **task) for task in tasks
         ]
-
-        # Wait for all tasks and collect results
 
         completed = 0
         total_bytes = 0
@@ -1677,8 +1745,10 @@ def imaris_to_zarr_distributed(
                     f"({total_bytes / (1024**3):.2f} GB)"
                 )
     else:
-        # Sequential execution (for testing)
-        logger.info("No Dask client - processing sequentially")
+        # Sequential execution (per-worker shard subset)
+        logger.info(
+            "No Dask client - processing sequentially (per worker subset)"
+        )
         for i, task in enumerate(tasks):
             result = process_single_shard(**task)
             logger.info(
@@ -1690,11 +1760,77 @@ def imaris_to_zarr_distributed(
     logger.info("Completed writing base level 0")
 
     # =========================================================================
-    # Step 4: Generate downsampled pyramid levels (if requested)
+    # Step 4: Translate pre-computed Imaris pyramid levels (if requested)
     # =========================================================================
-    if n_lvls > 1:
-        logger.info(f"Generating {n_lvls - 1} downsampled pyramid levels...")
+    if translate_pyramid_levels and n_lvls > 1:
+        for lvl in range(1, n_lvls):
+            lvl_data_path = _data_path(lvl)
+            with ImarisReader(imaris_path) as reader:
+                lvl_shape_3d = cast(
+                    Tuple[int, int, int],
+                    tuple(int(x) for x in reader.get_shape(lvl_data_path)),
+                )
 
+            lvl_shape_5d = (1, 1) + tuple(lvl_shape_3d)
+            lvl_spec = create_scale_spec(
+                output_path=dataset_path,
+                data_shape=lvl_shape_5d,
+                data_dtype=str(dtype),
+                shard_shape=shard_shape_5d,
+                chunk_shape=chunk_shape_5d,
+                scale=lvl,
+                codec=codec,
+                codec_level=codec_level,
+                bucket_name=bucket_name,
+            )
+            lvl_spec["create"] = True
+            lvl_spec["open"] = True
+            lvl_spec["delete_existing"] = False
+
+            # Partition shards for this level across all workers
+            lvl_shard_indices = enumerate_shard_indices(
+                cast(Tuple[int, int, int], lvl_shape_3d), shard_shape
+            )
+            lvl_partitioned = _partition_list(
+                lvl_shard_indices, num_of_partitions
+            )
+            my_lvl_shards = lvl_partitioned[partition_to_process]
+
+            if not my_lvl_shards:
+                logger.info(
+                    f"Worker {partition_to_process}: no shards for level {lvl}"
+                )
+                continue
+
+            lvl_tasks = create_shard_tasks(
+                imaris_path=imaris_path,
+                output_spec=lvl_spec,
+                data_shape=cast(Tuple[int, int, int], lvl_shape_3d),
+                shard_shape=shard_shape,
+                data_path=lvl_data_path,
+                shard_indices=my_lvl_shards,
+            )
+
+            logger.info(
+                f"Worker {partition_to_process}: processing "
+                f"{len(lvl_tasks)} shards for level {lvl}"
+            )
+
+            if dask_client is not None:
+                futures = [
+                    dask_client.submit(process_single_shard, **task)
+                    for task in lvl_tasks
+                ]
+                for future in as_completed(futures):
+                    future.result()
+            else:
+                for task in lvl_tasks:
+                    process_single_shard(**task)
+    elif n_lvls > 1:
+        logger.info(
+            "Generating downsampled pyramid levels (compute path): %s levels",
+            n_lvls - 1,
+        )
         create_downsample_levels(
             dataset_path=dataset_path,
             base_shape=shape_5d,
@@ -1709,21 +1845,31 @@ def imaris_to_zarr_distributed(
         )
 
     # =========================================================================
-    # Step 5: Write OME-NGFF metadata
+    # Step 5: Write OME-NGFF metadata (once)
     # =========================================================================
-    metadata_dict = write_ome_ngff_metadata(
-        arr_shape=list(shape_5d),
-        chunk_size=list(chunk_shape_5d),
-        image_name=channel_name or stack_name,
-        n_lvls=n_lvls,
-        scale_factors=scale_factor,
-        voxel_size=tuple(voxel_size),
-        channel_names=[channel_name or stack_name],
+    should_write_metadata = (
+        dask_client is not None or partition_to_process == 0
     )
 
-    _write_zarr_metadata(store_path, metadata_dict, is_s3)
+    if should_write_metadata:
+        metadata_dict = write_ome_ngff_metadata(
+            arr_shape=list(shape_5d),
+            chunk_size=list(chunk_shape_5d),
+            image_name=channel_name or stack_name,
+            n_lvls=n_lvls,
+            scale_factors=scale_factor,
+            voxel_size=tuple(voxel_size),
+            channel_names=[channel_name or stack_name],
+        )
 
-    logger.info(f"Successfully wrote {stack_name} with {n_lvls} levels")
+        _write_zarr_metadata(store_path, metadata_dict, is_s3)
+        logger.info(f"Successfully wrote {stack_name} with {n_lvls} levels")
+    else:
+        logger.info(
+            f"Metadata write skipped for worker {partition_to_process}; "
+            "assumes worker 0 will write metadata."
+        )
+
     return store_path
 
 
@@ -1751,8 +1897,11 @@ def _write_zarr_metadata(
             "driver": "json",
             "kvstore": _s3_kvstore(f"{store_path}/zarr.json"),
         }
-        store = ts.open(spec, create=True, delete_existing=True).result()
-        store.write(metadata_dict).result()
+        store = cast(
+            ts.TensorStore,
+            ts.open(spec, create=True, delete_existing=True).result(),
+        )
+        store.write(cast(Any, metadata_dict)).result()
     else:
         # Write locally
         metadata_path = Path(store_path) / "zarr.json"
@@ -1851,6 +2000,13 @@ def imaris_to_zarr_translate_pyramid(
     if stack_name is None:
         stack_name = Path(imaris_path).stem + ".ome.zarr"
 
+    chunk_shape = cast(
+        Tuple[int, int, int], tuple(int(x) for x in chunk_shape)
+    )
+    shard_shape = cast(
+        Tuple[int, int, int], tuple(int(x) for x in shard_shape)
+    )
+
     # Convert 3D shapes to 5D (T, C, Z, Y, X)
     chunk_shape_5d = (1, 1) + tuple(chunk_shape)
     shard_shape_5d = (1, 1) + tuple(shard_shape)
@@ -1863,8 +2019,8 @@ def imaris_to_zarr_translate_pyramid(
         """Count the number of resolution levels in the Imaris file."""
         count = 0
         with h5py.File(reader.filepath, "r") as f:
-            dataset = f["DataSet"]
-            for key in dataset.keys():
+            dataset = cast(h5py.Group, f["DataSet"])
+            for key in list(dataset.keys()):
                 if "ResolutionLevel" in key:
                     count += 1
         return count
@@ -1966,7 +2122,7 @@ def imaris_to_zarr_translate_pyramid(
 
             # Write blocks aligned to shard boundaries
             write_shape_3d = shard_shape if shard_shape else chunk_shape
-            pending_writes: List[ts.Future] = []
+            pending_writes: List[ts.WriteFutures] = []
 
             for block_slices_3d in iter_block_aligned_slices(
                 level_shape_3d, write_shape_3d
