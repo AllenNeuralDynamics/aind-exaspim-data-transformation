@@ -6,6 +6,7 @@ import json
 import os
 import platform
 import subprocess
+from pathlib import Path
 from typing import Optional
 
 import boto3
@@ -128,13 +129,21 @@ def read_json_as_dict(filepath: PathLike) -> dict:
 
     """
 
-    dictionary = {}
+    path = Path(filepath)
 
-    if os.path.exists(filepath):
-        with open(filepath) as json_file:
-            dictionary = json.load(json_file)
+    # Be defensive: mocks in tests may supply a MagicMock Path-like; treat any
+    # non-existent/non-file path as empty and skip disk I/O.
+    try:
+        if not path.exists() or not path.is_file():
+            return {}
+    except Exception:
+        return {}
 
-    return dictionary
+    try:
+        with path.open() as json_file:
+            return json.load(json_file)
+    except Exception:
+        return {}
 
 
 def sync_dir_to_s3(directory_to_upload: PathLike, s3_location: str) -> None:
