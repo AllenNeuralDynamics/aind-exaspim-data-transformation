@@ -1504,7 +1504,7 @@ def imaris_to_zarr_distributed(
     bucket_name: Optional[str] = None,
     dask_client: Optional[Any] = None,
     shard_indices: Optional[List[Tuple[int, int, int]]] = None,
-    translate_pyramid_levels: bool = True,
+    translate_pyramid_levels: bool = False,
     partition_to_process: int = 0,
     num_of_partitions: int = 1,
 ) -> str:
@@ -1826,6 +1826,23 @@ def imaris_to_zarr_distributed(
             else:
                 for task in lvl_tasks:
                     process_single_shard(**task)
+    elif n_lvls > 1:
+        logger.info(
+            "Generating downsampled pyramid levels (compute path): %s levels",
+            n_lvls - 1,
+        )
+        create_downsample_levels(
+            dataset_path=dataset_path,
+            base_shape=shape_5d,
+            n_levels=n_lvls,
+            downsample_factor=scale_factor,
+            downsample_mode=downsample_mode,
+            shard_shape=shard_shape_5d,
+            chunk_shape=chunk_shape_5d,
+            codec=codec,
+            codec_level=codec_level,
+            bucket_name=bucket_name,
+        )
 
     # =========================================================================
     # Step 5: Write OME-NGFF metadata (once)
