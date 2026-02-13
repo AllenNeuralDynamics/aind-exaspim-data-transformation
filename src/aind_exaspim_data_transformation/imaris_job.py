@@ -419,9 +419,7 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
                 data_shape = cast(
                     Tuple[int, int, int], tuple(reader.get_shape())
                 )
-            for shard_idx in enumerate_shard_indices(
-                data_shape, shard_shape
-            ):
+            for shard_idx in enumerate_shard_indices(data_shape, shard_shape):
                 tasks.append((stack_path, shard_idx))
 
         return tasks
@@ -471,7 +469,9 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
         # Group tasks by file
         from collections import defaultdict
 
-        tasks_by_file: dict[Path, List[tuple[int, int, int]]] = defaultdict(list)
+        tasks_by_file: dict[Path, List[tuple[int, int, int]]] = defaultdict(
+            list
+        )
         for stack_path, shard_idx in my_tasks:
             tasks_by_file[stack_path].append(shard_idx)
 

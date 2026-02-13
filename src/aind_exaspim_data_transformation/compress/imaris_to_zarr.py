@@ -16,18 +16,17 @@ imaris_to_zarr_writer
 """
 
 from __future__ import annotations
-import time
+
 import asyncio
+import json
 import logging
 import math
 import multiprocessing
+import time
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple, cast
-import json
 
 import dask.array as da
-from dask.distributed import as_completed
-
 import h5py
 
 # noqa: F401 - registers HDF5 compression filters (LZ4, etc.)
@@ -35,6 +34,7 @@ import h5py
 import numpy as np
 import tensorstore as ts
 import zarr
+from dask.distributed import as_completed
 from numcodecs import Blosc
 
 from aind_exaspim_data_transformation.compress.omezarr_metadata import (
@@ -1310,8 +1310,12 @@ def imaris_to_zarr_parallel(
     if stack_name is None:
         stack_name = Path(imaris_path).stem + ".ome.zarr"
 
-    chunk_shape = cast(Tuple[int, int, int], tuple(int(x) for x in chunk_shape))
-    shard_shape = cast(Tuple[int, int, int], tuple(int(x) for x in shard_shape))
+    chunk_shape = cast(
+        Tuple[int, int, int], tuple(int(x) for x in chunk_shape)
+    )
+    shard_shape = cast(
+        Tuple[int, int, int], tuple(int(x) for x in shard_shape)
+    )
     assert superchunk_shape is not None
     superchunk_shape = cast(
         Tuple[int, int, int], tuple(int(x) for x in superchunk_shape)
@@ -1616,8 +1620,12 @@ def imaris_to_zarr_distributed(
     if stack_name is None:
         stack_name = Path(imaris_path).stem + ".ome.zarr"
 
-    chunk_shape = cast(Tuple[int, int, int], tuple(int(x) for x in chunk_shape))
-    shard_shape = cast(Tuple[int, int, int], tuple(int(x) for x in shard_shape))
+    chunk_shape = cast(
+        Tuple[int, int, int], tuple(int(x) for x in chunk_shape)
+    )
+    shard_shape = cast(
+        Tuple[int, int, int], tuple(int(x) for x in shard_shape)
+    )
 
     # Convert 3D shapes to 5D (T, C, Z, Y, X)
     chunk_shape_5d = (1, 1) + tuple(chunk_shape)
@@ -1710,7 +1718,7 @@ def imaris_to_zarr_distributed(
     tasks = create_shard_tasks(
         imaris_path=imaris_path,
         output_spec=base_spec,
-    data_shape=cast(Tuple[int, int, int], shape_3d),
+        data_shape=cast(Tuple[int, int, int], shape_3d),
         shard_shape=shard_shape,
         data_path=base_path,
         shard_indices=base_shard_indices,
@@ -1822,7 +1830,9 @@ def imaris_to_zarr_distributed(
     # =========================================================================
     # Step 5: Write OME-NGFF metadata (once)
     # =========================================================================
-    should_write_metadata = dask_client is not None or partition_to_process == 0
+    should_write_metadata = (
+        dask_client is not None or partition_to_process == 0
+    )
 
     if should_write_metadata:
         metadata_dict = write_ome_ngff_metadata(
@@ -1836,9 +1846,7 @@ def imaris_to_zarr_distributed(
         )
 
         _write_zarr_metadata(store_path, metadata_dict, is_s3)
-        logger.info(
-            f"Successfully wrote {stack_name} with {n_lvls} levels"
-        )
+        logger.info(f"Successfully wrote {stack_name} with {n_lvls} levels")
     else:
         logger.info(
             f"Metadata write skipped for worker {partition_to_process}; "
@@ -1975,8 +1983,12 @@ def imaris_to_zarr_translate_pyramid(
     if stack_name is None:
         stack_name = Path(imaris_path).stem + ".ome.zarr"
 
-    chunk_shape = cast(Tuple[int, int, int], tuple(int(x) for x in chunk_shape))
-    shard_shape = cast(Tuple[int, int, int], tuple(int(x) for x in shard_shape))
+    chunk_shape = cast(
+        Tuple[int, int, int], tuple(int(x) for x in chunk_shape)
+    )
+    shard_shape = cast(
+        Tuple[int, int, int], tuple(int(x) for x in shard_shape)
+    )
 
     # Convert 3D shapes to 5D (T, C, Z, Y, X)
     chunk_shape_5d = (1, 1) + tuple(chunk_shape)
