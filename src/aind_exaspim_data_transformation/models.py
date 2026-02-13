@@ -117,3 +117,13 @@ class ImarisJobSettings(BasicJobSettings):
         ),
         title="Dask Workers",
     )
+
+    partition_mode: Literal["file", "shard"] = Field(
+        default="shard",
+        description=(
+            "Partitioning granularity. 'file' = legacy round-robin over files. "
+            "'shard' = round-robin over (file, shard_index) tuples for sub-file "
+            "parallelism (required for multi-worker-per-file)."
+        ),
+        title="Partition Mode",
+    )
