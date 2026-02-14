@@ -1868,6 +1868,11 @@ def imaris_to_zarr_distributed(
             lvl_spec["delete_existing"] = False
             logger.debug("Level %s scale spec prepared: %s", lvl, lvl_spec)
 
+            # Create the output store for this level (must happen before
+            # workers try to open it with create=False).
+            ts.open(lvl_spec).result()
+            logger.info("Created/opened output Zarr structure for level %s", lvl)
+
             # Partition shards for this level across all workers
             lvl_shard_indices = enumerate_shard_indices(
                 cast(Tuple[int, int, int], lvl_shape_3d), shard_shape
