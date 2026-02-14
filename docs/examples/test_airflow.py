@@ -18,18 +18,18 @@ from glob import glob
 
 import requests
 from aind_data_schema_models.modalities import Modality
-# from aind_data_schema_models.platforms import Platform
-
 from aind_data_transfer_service.models.core import (
     SubmitJobRequestV2,
     Task,
     UploadJobConfigsV2,
 )
 
+# from aind_data_schema_models.platforms import Platform
+
 
 # ── Configurable defaults ──────────────────────────────────────────
 IMAGE = "ghcr.io/allenneuraldynamics/aind-exaspim-data-transformation"
-IMAGE_VERSION = "0.0.1"
+IMAGE_VERSION = "dev-9bf19b7"
 ENDPOINT = "http://aind-data-transfer-service-dev"
 S3_BUCKET = "open"  # maps to aind-open-data-dev
 JOB_TYPE = "default"  # registered job type on the dev cluster
@@ -50,9 +50,7 @@ def _discover_ims_files(source: str) -> list[str]:
     """Return sorted list of .ims file paths found anywhere under *source*."""
     files = sorted(glob(os.path.join(source, "**", "*.ims"), recursive=True))
     if not files:
-        raise FileNotFoundError(
-            f"No .ims files found under {source}"
-        )
+        raise FileNotFoundError(f"No .ims files found under {source}")
     return files
 
 
@@ -65,14 +63,19 @@ def _estimate_resources(
     n_tiles: int, tile_size_mb: float
 ) -> tuple[int, int, int]:
     """Return (num_partitions, memory_per_cpu_mb, timeout_minutes)."""
-    num_partitions = min(n_tiles, MAX_PARTITIONS)
-    tiles_per_partition = max(n_tiles // num_partitions, 1)
+    # num_partitions = min(n_tiles, MAX_PARTITIONS)
+    # tiles_per_partition = max(n_tiles // num_partitions, 1)
+    # we want to run multiple partitions per file
+    num_partitions = 8
 
+    # estimated_mem = (
+    #     tiles_per_partition * SCHEDULING_OVERHEAD_MB
+    #     + PROCESSING_OVERHEAD_MB
+    #     + BUFFER_MB
+    # ) // CPUS_PER_NODE
     estimated_mem = (
-        tiles_per_partition * SCHEDULING_OVERHEAD_MB
-        + PROCESSING_OVERHEAD_MB
-        + BUFFER_MB
-    ) // CPUS_PER_NODE
+        MIN_RAM_MB // CPUS_PER_NODE
+    )  # from profiling, seems to need at least this much per CPU regardless of tile size
 
     memory_per_cpu = min(
         max(estimated_mem, MIN_RAM_MB // CPUS_PER_NODE),
@@ -111,6 +114,7 @@ def _derive_subject_id(path: str) -> str:
             else basename.split("_")[0]
         )
     return basename
+
 
 def submit_exaspim_job(
     source: str,
@@ -151,7 +155,9 @@ def submit_exaspim_job(
         "s3_location": "%S3_LOCATION",
         "num_of_partitions": num_partitions,
         "use_tensorstore": True,
-        "translate_imaris_pyramid": False,
+        "translate_imaris_pyramid": True,
+        "partition_mode": "shard",
+        "dask_workers": CPUS_PER_NODE,  # use all CPUs for distributed processing
     }
 
     custom_exaspim_task = Task(
@@ -170,7 +176,7 @@ def submit_exaspim_job(
             "standard_output": "/allen/aind/scratch/svc_aind_airflow/dev/logs/%x_%j.out",
             "environment": [
                 "PATH=/bin:/usr/bin/:/usr/local/bin/",
-                "LD_LIBRARY_PATH=/lib/:/lib64/:/usr/local/lib"
+                "LD_LIBRARY_PATH=/lib/:/lib64/:/usr/local/lib",
             ],
             "maximum_nodes": 1,
             "minimum_nodes": 1,
@@ -194,8 +200,8 @@ def submit_exaspim_job(
         modalities=[Modality.SPIM],
         subject_id=subject_id,
         acq_datetime=acq_datetime,
-        user_email = "carson.berry@alleninstitute.org",
-        email_notification_types= ["all"],
+        user_email="carson.berry@alleninstitute.org",
+        email_notification_types=["all"],
         tasks={
             "modality_transformation_settings": {
                 Modality.SPIM.abbreviation: custom_exaspim_task,
@@ -205,6 +211,8 @@ def submit_exaspim_job(
             "check_metadata_files": {"skip_task": True},
             "gather_preliminary_metadata": {"skip_task": True},
             "register_data_asset": {"skip_task": True},
+            "get_codeocean_asset_id": {"skip_task": True},
+            "run_codeocean_pipeline": {"skip_task": True},
         },
     )
 
@@ -222,10 +230,10 @@ def submit_exaspim_job(
 
 def test_submit_exaspim_job():
     data_dir = (
-            "/allen/aind/stage/exaSPIM/"
-            "exaSPIM_683791-screen_2026-01-26_14-53-41/exaSPIM"
-        )
-    
+        "/allen/aind/stage/exaSPIM/"
+        "exaSPIM_683791-screen_2026-01-26_14-53-41/exaSPIM"
+    )
+
     submit_exaspim_job(
         source=data_dir,
         project_name="MSMA Platform",

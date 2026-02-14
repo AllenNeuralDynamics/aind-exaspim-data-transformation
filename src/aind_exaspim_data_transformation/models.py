@@ -107,7 +107,7 @@ class ImarisJobSettings(BasicJobSettings):
         title="Translate Imaris Pyramid",
     )
     dask_workers: int = Field(
-        default=0,
+        default=4,
         description=(
             "Number of Dask workers for distributed processing. "
             "If 0, processing is sequential (no Dask cluster). "
