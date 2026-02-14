@@ -1611,6 +1611,29 @@ def imaris_to_zarr_distributed(
     logger.info(
         f"Starting distributed Imaris to Zarr conversion: {imaris_path}"
     )
+    logger.debug(
+        "Distributed args: output_path=%s voxel_size=%s chunk_shape=%s shard_shape=%s "
+        "n_lvls=%s scale_factor=%s downsample_mode=%s channel_name=%s stack_name=%s "
+        "codec=%s codec_level=%s bucket_name=%s dask_client=%s shard_indices=%s "
+        "translate_pyramid_levels=%s partition_to_process=%s num_of_partitions=%s",
+        output_path,
+        voxel_size,
+        chunk_shape,
+        shard_shape,
+        n_lvls,
+        scale_factor,
+        downsample_mode,
+        channel_name,
+        stack_name,
+        codec,
+        codec_level,
+        bucket_name,
+        dask_client,
+        shard_indices,
+        translate_pyramid_levels,
+        partition_to_process,
+        num_of_partitions,
+    )
 
     # Set defaults - larger shards for distributed processing
     if chunk_shape is None:
@@ -1619,6 +1642,12 @@ def imaris_to_zarr_distributed(
         shard_shape = (512, 512, 512)  # ~256MB for uint16
     if stack_name is None:
         stack_name = Path(imaris_path).stem + ".ome.zarr"
+    logger.debug(
+        "Resolved defaults: stack_name=%s chunk_shape=%s shard_shape=%s",
+        stack_name,
+        chunk_shape,
+        shard_shape,
+    )
 
     chunk_shape = cast(
         Tuple[int, int, int], tuple(int(x) for x in chunk_shape)
@@ -1626,10 +1655,20 @@ def imaris_to_zarr_distributed(
     shard_shape = cast(
         Tuple[int, int, int], tuple(int(x) for x in shard_shape)
     )
+    logger.debug(
+        "Normalized shapes: chunk_shape=%s shard_shape=%s",
+        chunk_shape,
+        shard_shape,
+    )
 
     # Convert 3D shapes to 5D (T, C, Z, Y, X)
     chunk_shape_5d = (1, 1) + tuple(chunk_shape)
     shard_shape_5d = (1, 1) + tuple(shard_shape)
+    logger.debug(
+        "Converted to 5D: chunk_shape_5d=%s shard_shape_5d=%s",
+        chunk_shape_5d,
+        shard_shape_5d,
+    )
 
     def _data_path(level: int) -> str:
         return f"/DataSet/ResolutionLevel {level}/TimePoint 0/Channel 0/Data"
@@ -1642,12 +1681,21 @@ def imaris_to_zarr_distributed(
             voxel_size, unit = reader.get_voxel_size()
             logger.info(f"Extracted voxel size: {voxel_size} {unit}")
 
+        logger.debug("Using voxel_size=%s", voxel_size)
+
         base_path = _data_path(0)
         shape_3d = reader.get_shape(base_path)
         dtype = reader.get_dtype(base_path)
         native_chunks = reader.get_chunks(base_path)
 
     shape_5d = (1, 1) + tuple(shape_3d)
+    logger.debug(
+        "Base path=%s shape_3d=%s dtype=%s native_chunks=%s",
+        base_path,
+        shape_3d,
+        dtype,
+        native_chunks,
+    )
 
     logger.info(f"Image shape (Z, Y, X): {shape_3d}")
     logger.info(f"Native HDF5 chunks: {native_chunks}")
@@ -1660,6 +1708,11 @@ def imaris_to_zarr_distributed(
     )
     total_shards = shard_grid[0] * shard_grid[1] * shard_grid[2]
     logger.info(f"Shard grid: {shard_grid} = {total_shards} total shards")
+    logger.debug(
+        "Shard grid details: shard_shape=%s total_shards=%s",
+        shard_shape,
+        total_shards,
+    )
 
     # Prepare output path
     output_zarr_path = Path(output_path) / stack_name
@@ -1674,6 +1727,12 @@ def imaris_to_zarr_distributed(
         dataset_path = store_path
         output_zarr_path.mkdir(parents=True, exist_ok=True)
         logger.info(f"Writing to local: {store_path}")
+    logger.debug(
+        "Resolved output paths: store_path=%s dataset_path=%s is_s3=%s",
+        store_path,
+        dataset_path,
+        is_s3,
+    )
 
     # =========================================================================
     # Step 2: Create the output Zarr structure (done by scheduler only)
@@ -1696,10 +1755,12 @@ def imaris_to_zarr_distributed(
     base_spec["create"] = True
     base_spec["open"] = True
     base_spec["delete_existing"] = False
+    logger.debug("Base scale spec prepared: %s", base_spec)
 
     # Create or open the store (idempotent across workers)
     store = ts.open(base_spec).result()
     logger.info("Created/opened output Zarr structure")
+    logger.debug("TensorStore opened: %s", store)
 
     # Small helper for deterministic partitioning
     def _partition_list(lst: List[Any], num_parts: int) -> List[List[Any]]:
@@ -1714,6 +1775,11 @@ def imaris_to_zarr_distributed(
     base_shard_indices = shard_indices or enumerate_shard_indices(
         cast(Tuple[int, int, int], shape_3d), shard_shape
     )
+    logger.debug(
+        "Shard indices source=%s count=%s",
+        "provided" if shard_indices else "computed",
+        len(base_shard_indices),
+    )
 
     tasks = create_shard_tasks(
         imaris_path=imaris_path,
@@ -1723,12 +1789,14 @@ def imaris_to_zarr_distributed(
         data_path=base_path,
         shard_indices=base_shard_indices,
     )
+    logger.debug("Sample task[0]=%s", tasks[0] if tasks else None)
 
     logger.info(f"Created {len(tasks)} base-level shard tasks")
 
     if dask_client is not None:
         # Distributed execution with Dask (single coordinator)
         logger.info(f"Submitting {len(tasks)} base shards to Dask cluster")
+        logger.debug("Dask client info: %s", dask_client)
         futures = [
             dask_client.submit(process_single_shard, **task) for task in tasks
         ]
@@ -1748,6 +1816,12 @@ def imaris_to_zarr_distributed(
         # Sequential execution (per-worker shard subset)
         logger.info(
             "No Dask client - processing sequentially (per worker subset)"
+        )
+        logger.debug(
+            "Sequential execution: tasks=%s partition_to_process=%s num_of_partitions=%s",
+            len(tasks),
+            partition_to_process,
+            num_of_partitions,
         )
         for i, task in enumerate(tasks):
             result = process_single_shard(**task)
@@ -1770,6 +1844,12 @@ def imaris_to_zarr_distributed(
                     Tuple[int, int, int],
                     tuple(int(x) for x in reader.get_shape(lvl_data_path)),
                 )
+            logger.debug(
+                "Level %s shape=%s data_path=%s",
+                lvl,
+                lvl_shape_3d,
+                lvl_data_path,
+            )
 
             lvl_shape_5d = (1, 1) + tuple(lvl_shape_3d)
             lvl_spec = create_scale_spec(
@@ -1786,6 +1866,7 @@ def imaris_to_zarr_distributed(
             lvl_spec["create"] = True
             lvl_spec["open"] = True
             lvl_spec["delete_existing"] = False
+            logger.debug("Level %s scale spec prepared: %s", lvl, lvl_spec)
 
             # Partition shards for this level across all workers
             lvl_shard_indices = enumerate_shard_indices(
@@ -1795,6 +1876,12 @@ def imaris_to_zarr_distributed(
                 lvl_shard_indices, num_of_partitions
             )
             my_lvl_shards = lvl_partitioned[partition_to_process]
+            logger.debug(
+                "Level %s partitioning: total=%s my_shards=%s",
+                lvl,
+                len(lvl_shard_indices),
+                len(my_lvl_shards),
+            )
 
             if not my_lvl_shards:
                 logger.info(
@@ -1810,6 +1897,12 @@ def imaris_to_zarr_distributed(
                 data_path=lvl_data_path,
                 shard_indices=my_lvl_shards,
             )
+            logger.debug(
+                "Level %s tasks count=%s sample=%s",
+                lvl,
+                len(lvl_tasks),
+                lvl_tasks[0] if lvl_tasks else None,
+            )
 
             logger.info(
                 f"Worker {partition_to_process}: processing "
@@ -1821,6 +1914,11 @@ def imaris_to_zarr_distributed(
                     dask_client.submit(process_single_shard, **task)
                     for task in lvl_tasks
                 ]
+                logger.debug(
+                    "Level %s submitted %s tasks to Dask",
+                    lvl,
+                    len(futures),
+                )
                 for future in as_completed(futures):
                     future.result()
             else:
@@ -1830,6 +1928,13 @@ def imaris_to_zarr_distributed(
         logger.info(
             "Generating downsampled pyramid levels (compute path): %s levels",
             n_lvls - 1,
+        )
+        logger.debug(
+            "Downsample config: scale_factor=%s mode=%s shard_shape_5d=%s chunk_shape_5d=%s",
+            scale_factor,
+            downsample_mode,
+            shard_shape_5d,
+            chunk_shape_5d,
         )
         create_downsample_levels(
             dataset_path=dataset_path,
