@@ -517,15 +517,11 @@ class TestImarisCompressionJob(unittest.TestCase):
         )
         job = ImarisCompressionJob(job_settings=settings)
 
-        with patch.object(
-            job, "_get_sorted_stack_paths"
-        ) as mock_sorted:
+        with patch.object(job, "_get_sorted_stack_paths") as mock_sorted:
             with patch.object(
                 job, "_upload_derivatives_folder"
             ) as mock_upload:
-                with patch.object(
-                    job, "_run_shard_partitioned"
-                ) as mock_shard:
+                with patch.object(job, "_run_shard_partitioned") as mock_shard:
                     mock_sorted.return_value = []
 
                     response = job.run_job()
