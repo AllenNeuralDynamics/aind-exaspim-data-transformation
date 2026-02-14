@@ -475,18 +475,50 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
         for stack_path, shard_idx in my_tasks:
             tasks_by_file[stack_path].append(shard_idx)
 
-        for stack_path, shard_indices in tasks_by_file.items():
-            self._process_file_shards(
-                stack_path=stack_path,
-                shard_indices=shard_indices,
-                voxel_size_zyx=voxel_size_zyx,
-            )
+        # Create Dask client once and reuse across all files
+        dask_client = None
+        dask_cluster = None
+
+        if self.job_settings.dask_workers > 0:
+            try:
+                from dask.distributed import Client, LocalCluster
+
+                logging.info(
+                    "Creating Dask cluster with %s workers",
+                    self.job_settings.dask_workers,
+                )
+                dask_cluster = LocalCluster(
+                    n_workers=self.job_settings.dask_workers,
+                    threads_per_worker=1,
+                )
+                dask_client = Client(dask_cluster)
+                logging.info("Dask dashboard: %s", dask_client.dashboard_link)
+            except ImportError:
+                logging.warning(
+                    "dask.distributed not available, "
+                    "falling back to sequential processing"
+                )
+
+        try:
+            for stack_path, shard_indices in tasks_by_file.items():
+                self._process_file_shards(
+                    stack_path=stack_path,
+                    shard_indices=shard_indices,
+                    voxel_size_zyx=voxel_size_zyx,
+                    dask_client=dask_client,
+                )
+        finally:
+            if dask_client is not None:
+                dask_client.close()
+            if dask_cluster is not None:
+                dask_cluster.close()
 
     def _process_file_shards(
         self,
         stack_path: Path,
         shard_indices: List[tuple[int, int, int]],
         voxel_size_zyx: Optional[List[float]] = None,
+        dask_client: Optional[Any] = None,
     ) -> None:
         """Write assigned shards (and pyramid levels) for a single file."""
 
@@ -534,7 +566,7 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
             channel_name=stack_path.stem,
             stack_name=f"{stack_path.stem}.ome.zarr",
             bucket_name=bucket_name,
-            dask_client=None,
+            dask_client=dask_client,
             shard_indices=shard_indices,
             translate_pyramid_levels=True,
             partition_to_process=self.job_settings.partition_to_process,
@@ -545,18 +577,28 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
         """Main entrypoint to run the job."""
         job_start_time = time()
 
-        # Reading data within the SPIM folder
-        partitioned_list = self._get_partitioned_list_of_stack_paths()
-
-        # Upload derivatives folder
+        # Upload derivatives folder (only from partition 0)
         if self.job_settings.partition_to_process == 0:
             self._upload_derivatives_folder()
 
-        stacks_to_process = partitioned_list[
-            self.job_settings.partition_to_process
-        ]
+        if self.job_settings.partition_mode == "shard":
+            # Shard-level partitioning: each worker processes a subset of
+            # (file, shard_index) tuples across all files.
+            all_stacks = self._get_sorted_stack_paths()
+            logging.info(
+                "Using shard-level partitioning (partition %s of %s)",
+                self.job_settings.partition_to_process,
+                self.job_settings.num_of_partitions,
+            )
+            self._run_shard_partitioned(all_stacks)
+        else:
+            # File-level partitioning: each worker processes whole files.
+            partitioned_list = self._get_partitioned_list_of_stack_paths()
+            stacks_to_process = partitioned_list[
+                self.job_settings.partition_to_process
+            ]
+            self._write_stacks(stacks_to_process=stacks_to_process)
 
-        self._write_stacks(stacks_to_process=stacks_to_process)
         total_job_duration = time() - job_start_time
         return JobResponse(
             status_code=200,

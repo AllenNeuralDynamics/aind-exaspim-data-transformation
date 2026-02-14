@@ -156,6 +156,8 @@ def submit_exaspim_job(
         "num_of_partitions": num_partitions,
         "use_tensorstore": True,
         "translate_imaris_pyramid": True,
+        "partition_mode": "shard", 
+        "dask_workers": CPUS_PER_NODE,  # use all CPUs for distributed processing
     }
 
     custom_exaspim_task = Task(
