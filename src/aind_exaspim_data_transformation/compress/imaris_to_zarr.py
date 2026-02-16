@@ -1735,7 +1735,12 @@ def imaris_to_zarr_distributed(
     )
 
     # =========================================================================
-    # Step 2: Create the output Zarr structure (done by scheduler only)
+    # Step 2: Create the output Zarr structure for ALL levels upfront.
+    #
+    # Every worker (SLURM partition) executes this step idempotently so
+    # that all zarr.json files exist on S3 *before* any shard tasks are
+    # submitted.  This avoids the race where a fast worker submits Dask
+    # tasks for a pyramid level before the store has been created.
     # =========================================================================
     logger.info(f"Creating output Zarr structure: shape={shape_5d}")
 
@@ -1759,8 +1764,49 @@ def imaris_to_zarr_distributed(
 
     # Create or open the store (idempotent across workers)
     store = ts.open(base_spec).result()
-    logger.info("Created/opened output Zarr structure")
+    logger.info("Created/opened base level 0 Zarr structure")
     logger.debug("TensorStore opened: %s", store)
+
+    # Pre-create all pyramid level stores so they exist before any shard
+    # tasks are submitted.  We also cache each level's spec + shape for
+    # reuse in Step 4.
+    #   level_info[lvl] = (lvl_spec, lvl_shape_3d)
+    level_info: Dict[int, Any] = {}
+
+    if translate_pyramid_levels and n_lvls > 1:
+        for lvl in range(1, n_lvls):
+            lvl_data_path = _data_path(lvl)
+            with ImarisReader(imaris_path) as reader:
+                lvl_shape_3d = cast(
+                    Tuple[int, int, int],
+                    tuple(int(x) for x in reader.get_shape(lvl_data_path)),
+                )
+
+            lvl_shape_5d = (1, 1) + tuple(lvl_shape_3d)
+            lvl_spec = create_scale_spec(
+                output_path=dataset_path,
+                data_shape=lvl_shape_5d,
+                data_dtype=str(dtype),
+                shard_shape=shard_shape_5d,
+                chunk_shape=chunk_shape_5d,
+                scale=lvl,
+                codec=codec,
+                codec_level=codec_level,
+                bucket_name=bucket_name,
+            )
+            lvl_spec["create"] = True
+            lvl_spec["open"] = True
+            lvl_spec["delete_existing"] = False
+
+            ts.open(lvl_spec).result()
+            logger.info(
+                "Created/opened Zarr structure for pyramid level %s "
+                "(shape=%s)",
+                lvl,
+                lvl_shape_3d,
+            )
+
+            level_info[lvl] = (lvl_spec, lvl_shape_3d)
 
     # Small helper for deterministic partitioning
     def _partition_list(lst: List[Any], num_parts: int) -> List[List[Any]]:
@@ -1835,43 +1881,21 @@ def imaris_to_zarr_distributed(
 
     # =========================================================================
     # Step 4: Translate pre-computed Imaris pyramid levels (if requested)
+    #
+    # The Zarr stores for every level were already created in Step 2, so
+    # workers can safely open them with create=False.
     # =========================================================================
     if translate_pyramid_levels and n_lvls > 1:
         for lvl in range(1, n_lvls):
+            lvl_spec, lvl_shape_3d = level_info[lvl]
             lvl_data_path = _data_path(lvl)
-            with ImarisReader(imaris_path) as reader:
-                lvl_shape_3d = cast(
-                    Tuple[int, int, int],
-                    tuple(int(x) for x in reader.get_shape(lvl_data_path)),
-                )
+
             logger.debug(
                 "Level %s shape=%s data_path=%s",
                 lvl,
                 lvl_shape_3d,
                 lvl_data_path,
             )
-
-            lvl_shape_5d = (1, 1) + tuple(lvl_shape_3d)
-            lvl_spec = create_scale_spec(
-                output_path=dataset_path,
-                data_shape=lvl_shape_5d,
-                data_dtype=str(dtype),
-                shard_shape=shard_shape_5d,
-                chunk_shape=chunk_shape_5d,
-                scale=lvl,
-                codec=codec,
-                codec_level=codec_level,
-                bucket_name=bucket_name,
-            )
-            lvl_spec["create"] = True
-            lvl_spec["open"] = True
-            lvl_spec["delete_existing"] = False
-            logger.debug("Level %s scale spec prepared: %s", lvl, lvl_spec)
-
-            # Create the output store for this level (must happen before
-            # workers try to open it with create=False).
-            ts.open(lvl_spec).result()
-            logger.info("Created/opened output Zarr structure for level %s", lvl)
 
             # Partition shards for this level across all workers
             lvl_shard_indices = enumerate_shard_indices(
