@@ -47,7 +47,7 @@ class TestTranslationFields(unittest.TestCase):
         for i, dataset in enumerate(datasets):
             with self.subTest(level=i):
                 transforms = dataset.get("coordinateTransformations", [])
-                
+
                 # Find translation transform
                 translation_transform = None
                 for transform in transforms:
@@ -58,7 +58,7 @@ class TestTranslationFields(unittest.TestCase):
                 # Assert translation exists
                 self.assertIsNotNone(
                     translation_transform,
-                    f"Level {i} is missing translation field"
+                    f"Level {i} is missing translation field",
                 )
 
                 # Verify translation is a list of 5 floats
@@ -86,17 +86,19 @@ class TestTranslationFields(unittest.TestCase):
 
         # Expected translations for 2x downsampling with scale_factors=(1, 2, 2)
         expected_translations = [
-            [0.0, 0.0, 0.0, 0.0, 0.0],    # Level 0 (1x)
-            [0.0, 0.0, 0.0, 0.5, 0.5],    # Level 1 (2x)
-            [0.0, 0.0, 0.0, 1.5, 1.5],    # Level 2 (4x)
-            [0.0, 0.0, 0.0, 3.5, 3.5],    # Level 3 (8x)
-            [0.0, 0.0, 0.0, 7.5, 7.5],    # Level 4 (16x)
+            [0.0, 0.0, 0.0, 0.0, 0.0],  # Level 0 (1x)
+            [0.0, 0.0, 0.0, 0.5, 0.5],  # Level 1 (2x)
+            [0.0, 0.0, 0.0, 1.5, 1.5],  # Level 2 (4x)
+            [0.0, 0.0, 0.0, 3.5, 3.5],  # Level 3 (8x)
+            [0.0, 0.0, 0.0, 7.5, 7.5],  # Level 4 (16x)
         ]
 
-        for i, (dataset, expected) in enumerate(zip(datasets, expected_translations)):
+        for i, (dataset, expected) in enumerate(
+            zip(datasets, expected_translations)
+        ):
             with self.subTest(level=i):
                 transforms = dataset.get("coordinateTransformations", [])
-                
+
                 # Find translation transform
                 translation = None
                 for transform in transforms:
@@ -106,9 +108,7 @@ class TestTranslationFields(unittest.TestCase):
 
                 self.assertIsNotNone(translation)
                 self.assertEqual(
-                    translation,
-                    expected,
-                    f"Level {i} translation mismatch"
+                    translation, expected, f"Level {i} translation mismatch"
                 )
 
     def test_scale_and_translation_both_present(self):
@@ -130,14 +130,20 @@ class TestTranslationFields(unittest.TestCase):
         for i, dataset in enumerate(datasets):
             with self.subTest(level=i):
                 transforms = dataset.get("coordinateTransformations", [])
-                
+
                 # Check for scale transform
                 has_scale = any(t.get("type") == "scale" for t in transforms)
-                self.assertTrue(has_scale, f"Level {i} missing scale transform")
-                
+                self.assertTrue(
+                    has_scale, f"Level {i} missing scale transform"
+                )
+
                 # Check for translation transform
-                has_translation = any(t.get("type") == "translation" for t in transforms)
-                self.assertTrue(has_translation, f"Level {i} missing translation transform")
+                has_translation = any(
+                    t.get("type") == "translation" for t in transforms
+                )
+                self.assertTrue(
+                    has_translation, f"Level {i} missing translation transform"
+                )
 
     def test_without_origin_parameter(self):
         """Test that metadata can be generated without origin (backwards compatibility)."""
