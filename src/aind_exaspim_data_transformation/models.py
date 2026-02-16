@@ -62,7 +62,7 @@ class ImarisJobSettings(BasicJobSettings):
         title="Shard Size",
     )
     chunk_size: List[int] = Field(
-        default=[128, 128, 128],  # Default list with three integers
+        default=[128, 256, 256],  # Default list with three integers
         description="Chunk size in axis, a list of three integers",
         title="Chunk Size",
     )
