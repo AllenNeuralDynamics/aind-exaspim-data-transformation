@@ -852,6 +852,7 @@ class TestLiveImsToZarr(unittest.TestCase):
             shape = reader.get_shape()
 
         import math
+
         shard_grid = tuple(
             math.ceil(s / sh) for s, sh in zip(shape, shard_shape)
         )
@@ -876,17 +877,13 @@ class TestLiveImsToZarr(unittest.TestCase):
         results = []
 
         for n_workers in worker_configs:
-            stack_name = (
-                f"{ims_file.stem}_dask_{n_workers}w.ome.zarr"
-            )
+            stack_name = f"{ims_file.stem}_dask_{n_workers}w.ome.zarr"
             s3_output = f"s3://{s3_bucket}/{s3_prefix}/{stack_name}"
 
             print(f"\n--- {n_workers} workers ---")
             print(f"  Output: {s3_output}")
 
-            cluster = LocalCluster(
-                n_workers=n_workers, threads_per_worker=1
-            )
+            cluster = LocalCluster(n_workers=n_workers, threads_per_worker=1)
             client = Client(cluster)
             print(f"  Dashboard: {client.dashboard_link}")
 
@@ -911,15 +908,13 @@ class TestLiveImsToZarr(unittest.TestCase):
                     )
 
                 elapsed = stats.get("elapsed_seconds", 0)
-                throughput = (
-                    input_size_gb / elapsed if elapsed > 0 else 0
-                )
+                throughput = input_size_gb / elapsed if elapsed > 0 else 0
                 peak_mem = stats.get("memory_mb", {}).get("max", 0)
-                results.append(
-                    (n_workers, elapsed, throughput, peak_mem)
+                results.append((n_workers, elapsed, throughput, peak_mem))
+                print(
+                    f"  ✓ {elapsed:.1f}s  {throughput:.3f} GB/s  "
+                    f"peak_mem={peak_mem:.0f} MB"
                 )
-                print(f"  ✓ {elapsed:.1f}s  {throughput:.3f} GB/s  "
-                      f"peak_mem={peak_mem:.0f} MB")
             finally:
                 client.close()
                 cluster.close()
@@ -930,8 +925,10 @@ class TestLiveImsToZarr(unittest.TestCase):
         print(f"{'='*60}")
         print(f"  File: {ims_file.name} ({input_size_gb:.2f} GB)")
         print(f"  Shard: {shard_shape}, Levels: {n_lvls}")
-        print(f"  {'Workers':>8} {'Time (s)':>10} {'GB/s':>8} "
-              f"{'Peak MB':>10}")
+        print(
+            f"  {'Workers':>8} {'Time (s)':>10} {'GB/s':>8} "
+            f"{'Peak MB':>10}"
+        )
         print(f"  {'-'*40}")
         for n_w, t, tp, mem in results:
             print(f"  {n_w:>8} {t:>10.1f} {tp:>8.3f} {mem:>10.0f}")

@@ -1427,13 +1427,17 @@ class TestTranslatePyramidLevels(unittest.TestCase):
         orig_ts_open_rv.result.return_value = MagicMock()
 
         def _track_ts_open(spec):
-            call_order.append(("ts.open", spec.get("metadata", {}).get("shape")))
+            call_order.append(
+                ("ts.open", spec.get("metadata", {}).get("shape"))
+            )
             return orig_ts_open_rv
 
         mock_ts_open.side_effect = _track_ts_open
 
         def _track_process(**kwargs):
-            call_order.append(("process_single_shard", kwargs.get("shard_index")))
+            call_order.append(
+                ("process_single_shard", kwargs.get("shard_index"))
+            )
             return {
                 "shard_index": kwargs.get("shard_index", (0, 0, 0)),
                 "bytes_written": 1024 * 1024,
