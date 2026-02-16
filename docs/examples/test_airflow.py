@@ -29,7 +29,7 @@ from aind_data_transfer_service.models.core import (
 
 # ── Configurable defaults ──────────────────────────────────────────
 IMAGE = "ghcr.io/allenneuraldynamics/aind-exaspim-data-transformation"
-IMAGE_VERSION = "dev-b19461e"
+IMAGE_VERSION = "dev-538e521"
 ENDPOINT = "http://aind-data-transfer-service-dev"
 S3_BUCKET = "open"  # maps to aind-open-data-dev
 JOB_TYPE = "default"  # registered job type on the dev cluster
@@ -66,7 +66,7 @@ def _estimate_resources(
     # num_partitions = min(n_tiles, MAX_PARTITIONS)
     # tiles_per_partition = max(n_tiles // num_partitions, 1)
     # we want to run multiple partitions per file
-    num_partitions = 8
+    num_partitions = 32
 
     # estimated_mem = (
     #     tiles_per_partition * SCHEDULING_OVERHEAD_MB
