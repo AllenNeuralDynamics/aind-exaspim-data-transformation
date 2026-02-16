@@ -904,6 +904,10 @@ def imaris_to_zarr_writer(
         else:
             logger.info(f"Using provided voxel size: {voxel_size}")
 
+        # Get origin for proper coordinate transformations
+        origin = reader.get_origin()
+        logger.info(f"Extracted origin from Imaris: {origin}")
+
         # Determine actual number of levels available
         available_levels = reader.n_levels
         actual_n_lvls = min(n_lvls, available_levels)
@@ -975,6 +979,7 @@ def imaris_to_zarr_writer(
             scale_factors=tuple(scale_factor),
             voxel_size=tuple(voxel_size),
             channel_names=[channel_name or stack_name],
+            origin=origin,
         )
 
         root.attrs.update(metadata_dict)
@@ -1339,6 +1344,10 @@ def imaris_to_zarr_parallel(
         else:
             logger.info(f"Using provided voxel size: {voxel_size}")
 
+        # Get origin for proper coordinate transformations
+        origin = reader.get_origin()
+        logger.info(f"Extracted origin from Imaris: {origin}")
+
         # Get shape and dtype from base resolution
         base_path = _data_path(0)
         shape_3d = cast(
@@ -1474,6 +1483,7 @@ def imaris_to_zarr_parallel(
         scale_factors=scale_factor,
         voxel_size=tuple(voxel_size),
         channel_names=[channel_name or stack_name],
+        origin=origin,
     )
 
     # Write metadata to zarr.json
@@ -1680,6 +1690,10 @@ def imaris_to_zarr_distributed(
         if voxel_size is None:
             voxel_size, unit = reader.get_voxel_size()
             logger.info(f"Extracted voxel size: {voxel_size} {unit}")
+
+        # Get origin for proper coordinate transformations
+        origin = reader.get_origin()
+        logger.info(f"Extracted origin from Imaris: {origin}")
 
         logger.debug("Using voxel_size=%s", voxel_size)
 
@@ -1994,6 +2008,7 @@ def imaris_to_zarr_distributed(
             scale_factors=scale_factor,
             voxel_size=tuple(voxel_size),
             channel_names=[channel_name or stack_name],
+            origin=origin,
         )
 
         _write_zarr_metadata(store_path, metadata_dict, is_s3)
@@ -2169,6 +2184,10 @@ def imaris_to_zarr_translate_pyramid(
         else:
             logger.info(f"Using provided voxel size: {voxel_size}")
 
+        # Get origin for proper coordinate transformations
+        origin = reader.get_origin()
+        logger.info(f"Extracted origin from Imaris: {origin}")
+
         # Count available pyramid levels in Imaris file
         available_levels = _count_imaris_levels(reader)
         logger.info(
@@ -2326,6 +2345,7 @@ def imaris_to_zarr_translate_pyramid(
         scale_factors=representative_factor,
         voxel_size=tuple(voxel_size),
         channel_names=[channel_name or stack_name],
+        origin=origin,
     )
 
     # Write metadata to zarr.json
