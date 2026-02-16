@@ -611,6 +611,99 @@ class TestProcessSingleShard(unittest.TestCase):
         # Verify read was called with correct slices
         mock_reader.read_block.assert_called_once()
 
+    @patch("aind_exaspim_data_transformation.compress.imaris_to_zarr.ts")
+    @patch(
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr.ImarisReader"
+    )
+    def test_process_single_shard_overrides_create_to_false(
+        self, mock_imaris_reader_cls, mock_ts
+    ):
+        """Workers must always open with create=False — the coordinator
+        is responsible for creating all stores upfront in Step 2."""
+        from aind_exaspim_data_transformation.compress.imaris_to_zarr import (
+            process_single_shard,
+        )
+
+        mock_reader = MagicMock()
+        test_data = np.zeros((128, 256, 256), dtype=np.uint16)
+        mock_reader.read_block.return_value = test_data
+        mock_imaris_reader_cls.return_value.__enter__ = Mock(
+            return_value=mock_reader
+        )
+        mock_imaris_reader_cls.return_value.__exit__ = Mock(return_value=False)
+
+        mock_store = MagicMock()
+        mock_future = MagicMock()
+        mock_future.result.return_value = None
+        mock_store.__getitem__.return_value.write.return_value = mock_future
+        mock_ts.open.return_value.result.return_value = mock_store
+
+        # Even if the spec carries create=True, the worker must override it
+        output_spec = {
+            "driver": "zarr3",
+            "create": True,
+            "open": True,
+            "delete_existing": False,
+        }
+
+        process_single_shard(
+            imaris_path="/path/to/input.ims",
+            output_spec=output_spec,
+            shard_index=(0, 0, 0),
+            shard_shape=(128, 256, 256),
+            data_shape=(256, 512, 512),
+        )
+
+        # Inspect the spec that was passed to ts.open
+        actual_spec = mock_ts.open.call_args[0][0]
+        self.assertFalse(
+            actual_spec["create"],
+            "process_single_shard must always set create=False",
+        )
+
+    @patch("aind_exaspim_data_transformation.compress.imaris_to_zarr.ts")
+    @patch(
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr.ImarisReader"
+    )
+    def test_process_single_shard_defaults_create_false(
+        self, mock_imaris_reader_cls, mock_ts
+    ):
+        """When output_spec does NOT carry a create key the worker must
+        default to create=False."""
+        from aind_exaspim_data_transformation.compress.imaris_to_zarr import (
+            process_single_shard,
+        )
+
+        mock_reader = MagicMock()
+        test_data = np.zeros((128, 256, 256), dtype=np.uint16)
+        mock_reader.read_block.return_value = test_data
+        mock_imaris_reader_cls.return_value.__enter__ = Mock(
+            return_value=mock_reader
+        )
+        mock_imaris_reader_cls.return_value.__exit__ = Mock(return_value=False)
+
+        mock_store = MagicMock()
+        mock_future = MagicMock()
+        mock_future.result.return_value = None
+        mock_store.__getitem__.return_value.write.return_value = mock_future
+        mock_ts.open.return_value.result.return_value = mock_store
+
+        output_spec = {"driver": "zarr3"}  # No create key
+
+        process_single_shard(
+            imaris_path="/path/to/input.ims",
+            output_spec=output_spec,
+            shard_index=(0, 0, 0),
+            shard_shape=(128, 256, 256),
+            data_shape=(256, 512, 512),
+        )
+
+        actual_spec = mock_ts.open.call_args[0][0]
+        self.assertFalse(
+            actual_spec["create"],
+            "create should default to False when not in output_spec",
+        )
+
 
 class TestWriteZarrMetadata(unittest.TestCase):
     """Test suite for _write_zarr_metadata function."""
@@ -1289,6 +1382,361 @@ class TestProcessSingleShardFunction(unittest.TestCase):
         # TensorStore uses: store[slices].write(data).result()
         mock_store.__getitem__.assert_called()
         mock_store.__getitem__().write.assert_called()
+
+
+class TestTranslatePyramidLevels(unittest.TestCase):
+    """Tests for the translate_pyramid_levels path in imaris_to_zarr_distributed."""
+
+    @patch(
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr.write_ome_ngff_metadata"
+    )
+    @patch(
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr._write_zarr_metadata"
+    )
+    @patch(
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr.create_downsample_levels"
+    )
+    @patch(
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr.process_single_shard"
+    )
+    @patch("aind_exaspim_data_transformation.compress.imaris_to_zarr.ts.open")
+    @patch(
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr.ImarisReader"
+    )
+    @patch("aind_exaspim_data_transformation.compress.imaris_to_zarr.Path")
+    def test_translate_pyramid_creates_zarr_for_each_level(
+        self,
+        mock_path_cls,
+        mock_reader_cls,
+        mock_ts_open,
+        mock_process_shard,
+        mock_downsample,
+        mock_write_metadata,
+        mock_write_ome,
+    ):
+        """When translate_pyramid_levels=True, ts.open must be called for
+        every pyramid level upfront (in Step 2) to create all Zarr stores
+        before any shard tasks are submitted."""
+        from aind_exaspim_data_transformation.compress.imaris_to_zarr import (
+            imaris_to_zarr_distributed,
+        )
+
+        # Track call ordering: ts.open vs process_single_shard
+        call_order = []
+        orig_ts_open_rv = MagicMock()
+        orig_ts_open_rv.result.return_value = MagicMock()
+
+        def _track_ts_open(spec):
+            call_order.append(
+                ("ts.open", spec.get("metadata", {}).get("shape"))
+            )
+            return orig_ts_open_rv
+
+        mock_ts_open.side_effect = _track_ts_open
+
+        def _track_process(**kwargs):
+            call_order.append(
+                ("process_single_shard", kwargs.get("shard_index"))
+            )
+            return {
+                "shard_index": kwargs.get("shard_index", (0, 0, 0)),
+                "bytes_written": 1024 * 1024,
+                "bytes_read": 1024 * 1024,
+                "elapsed_seconds": 0.5,
+                "shape": (32, 64, 128),
+            }
+
+        mock_process_shard.side_effect = _track_process
+
+        # Mock ImarisReader - provide shapes for base + 2 pyramid levels
+        mock_reader = MagicMock()
+        mock_reader.get_voxel_size.return_value = ([1.0, 0.5, 0.5], b"um")
+
+        # Return different shapes per resolution level
+        def _get_shape(data_path):
+            if "ResolutionLevel 0" in data_path:
+                return (128, 256, 512)
+            elif "ResolutionLevel 1" in data_path:
+                return (64, 128, 256)
+            elif "ResolutionLevel 2" in data_path:
+                return (32, 64, 128)
+            return (128, 256, 512)
+
+        mock_reader.get_shape.side_effect = _get_shape
+        mock_reader.get_dtype.return_value = np.dtype("uint16")
+        mock_reader.get_chunks.return_value = (32, 64, 128)
+        mock_reader_cls.return_value.__enter__ = Mock(return_value=mock_reader)
+        mock_reader_cls.return_value.__exit__ = Mock(return_value=False)
+
+        # Mock Path
+        mock_output_path = MagicMock()
+        mock_output_path.__truediv__ = Mock(return_value=mock_output_path)
+        mock_output_path.__str__ = Mock(return_value="/output/test.ome.zarr")
+        mock_path_cls.return_value = mock_output_path
+
+        # Mock metadata writer
+        mock_write_ome.return_value = {"multiscales": []}
+
+        imaris_to_zarr_distributed(
+            imaris_path="/input/test.ims",
+            output_path="/output",
+            chunk_shape=(32, 64, 128),
+            shard_shape=(64, 128, 256),
+            n_lvls=3,
+            channel_name="ch0",
+            stack_name="test.ome.zarr",
+            bucket_name=None,
+            dask_client=None,
+            translate_pyramid_levels=True,
+        )
+
+        # ts.open must be called exactly 3 times:
+        #   1x for base level 0, 1x for level 1, 1x for level 2
+        self.assertEqual(mock_ts_open.call_count, 3)
+
+        # All ts.open calls must happen BEFORE any process_single_shard call
+        ts_open_indices = [
+            i for i, (name, _) in enumerate(call_order) if name == "ts.open"
+        ]
+        process_indices = [
+            i
+            for i, (name, _) in enumerate(call_order)
+            if name == "process_single_shard"
+        ]
+        self.assertTrue(
+            max(ts_open_indices) < min(process_indices),
+            f"All ts.open calls must precede all process_single_shard calls. "
+            f"ts.open indices={ts_open_indices}, "
+            f"process indices={process_indices}",
+        )
+
+        # Verify process_single_shard was called for pyramid levels too
+        base_shard_count = 2 * 2 * 2  # 128/64 x 256/128 x 512/256
+        total_calls = mock_process_shard.call_count
+        self.assertGreater(
+            total_calls,
+            base_shard_count,
+            "process_single_shard should be called for pyramid levels too",
+        )
+
+        # create_downsample_levels should NOT be called when translating
+        mock_downsample.assert_not_called()
+
+    @patch(
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr.write_ome_ngff_metadata"
+    )
+    @patch(
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr._write_zarr_metadata"
+    )
+    @patch(
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr.create_downsample_levels"
+    )
+    @patch(
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr.process_single_shard"
+    )
+    @patch("aind_exaspim_data_transformation.compress.imaris_to_zarr.ts.open")
+    @patch(
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr.ImarisReader"
+    )
+    @patch("aind_exaspim_data_transformation.compress.imaris_to_zarr.Path")
+    @patch(
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr.as_completed"
+    )
+    def test_translate_pyramid_with_dask_submits_level_tasks(
+        self,
+        mock_as_completed,
+        mock_path_cls,
+        mock_reader_cls,
+        mock_ts_open,
+        mock_process_shard,
+        mock_downsample,
+        mock_write_metadata,
+        mock_write_ome,
+    ):
+        """When translate_pyramid_levels=True with a Dask client, all
+        pyramid level stores are created upfront (Step 2) and shard tasks
+        are submitted via client.submit."""
+        from aind_exaspim_data_transformation.compress.imaris_to_zarr import (
+            imaris_to_zarr_distributed,
+        )
+
+        # Track call ordering
+        call_order = []
+        orig_ts_open_rv = MagicMock()
+        orig_ts_open_rv.result.return_value = MagicMock()
+
+        def _track_ts_open(spec):
+            call_order.append("ts.open")
+            return orig_ts_open_rv
+
+        mock_ts_open.side_effect = _track_ts_open
+
+        # Mock ImarisReader
+        mock_reader = MagicMock()
+        mock_reader.get_voxel_size.return_value = ([1.0, 0.5, 0.5], b"um")
+
+        def _get_shape(data_path):
+            if "ResolutionLevel 0" in data_path:
+                return (128, 256, 512)
+            elif "ResolutionLevel 1" in data_path:
+                return (64, 128, 256)
+            return (128, 256, 512)
+
+        mock_reader.get_shape.side_effect = _get_shape
+        mock_reader.get_dtype.return_value = np.dtype("uint16")
+        mock_reader.get_chunks.return_value = (32, 64, 128)
+        mock_reader_cls.return_value.__enter__ = Mock(return_value=mock_reader)
+        mock_reader_cls.return_value.__exit__ = Mock(return_value=False)
+
+        # Mock Path
+        mock_output_path = MagicMock()
+        mock_output_path.__truediv__ = Mock(return_value=mock_output_path)
+        mock_output_path.__str__ = Mock(return_value="/output/test.ome.zarr")
+        mock_path_cls.return_value = mock_output_path
+
+        # Mock metadata writer
+        mock_write_ome.return_value = {"multiscales": []}
+
+        # Mock Dask client
+        mock_client = MagicMock()
+        mock_future = MagicMock()
+        mock_future.result.return_value = {
+            "shard_index": (0, 0, 0),
+            "bytes_written": 1024 * 1024,
+            "elapsed_seconds": 0.5,
+        }
+        mock_client.submit.return_value = mock_future
+
+        # as_completed is called once per level that has tasks — return a
+        # fresh iterator each time so both base and pyramid calls work.
+        def _as_completed(futures):
+            call_order.append("as_completed")
+            return iter(futures)
+
+        mock_as_completed.side_effect = _as_completed
+
+        imaris_to_zarr_distributed(
+            imaris_path="/input/test.ims",
+            output_path="/output",
+            chunk_shape=(32, 64, 128),
+            shard_shape=(64, 128, 256),
+            n_lvls=2,
+            channel_name="ch0",
+            stack_name="test.ome.zarr",
+            bucket_name=None,
+            dask_client=mock_client,
+            translate_pyramid_levels=True,
+        )
+
+        # ts.open must be called exactly 2 times (base + level 1),
+        # both BEFORE any as_completed (which signals shard processing).
+        self.assertEqual(mock_ts_open.call_count, 2)
+
+        first_as_completed = call_order.index("as_completed")
+        ts_open_indices = [
+            i for i, v in enumerate(call_order) if v == "ts.open"
+        ]
+        self.assertTrue(
+            all(idx < first_as_completed for idx in ts_open_indices),
+            f"All ts.open calls must happen before first as_completed. "
+            f"call_order={call_order}",
+        )
+
+        # client.submit should be called for base + pyramid shards
+        base_shards = 2 * 2 * 2  # 128/64 x 256/128 x 512/256 = 8
+        total_submitted = mock_client.submit.call_count
+        self.assertGreater(
+            total_submitted,
+            base_shards,
+            "Dask submit should include pyramid level shard tasks",
+        )
+
+        # create_downsample_levels should NOT be called
+        mock_downsample.assert_not_called()
+
+    @patch(
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr.write_ome_ngff_metadata"
+    )
+    @patch(
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr._write_zarr_metadata"
+    )
+    @patch(
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr.create_downsample_levels"
+    )
+    @patch(
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr.process_single_shard"
+    )
+    @patch("aind_exaspim_data_transformation.compress.imaris_to_zarr.ts.open")
+    @patch(
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr.ImarisReader"
+    )
+    @patch("aind_exaspim_data_transformation.compress.imaris_to_zarr.Path")
+    def test_translate_false_uses_downsample_levels(
+        self,
+        mock_path_cls,
+        mock_reader_cls,
+        mock_ts_open,
+        mock_process_shard,
+        mock_downsample,
+        mock_write_metadata,
+        mock_write_ome,
+    ):
+        """When translate_pyramid_levels=False (default) and n_lvls>1,
+        create_downsample_levels is called and ts.open is only called
+        once (for the base level)."""
+        from aind_exaspim_data_transformation.compress.imaris_to_zarr import (
+            imaris_to_zarr_distributed,
+        )
+
+        # Mock ImarisReader
+        mock_reader = MagicMock()
+        mock_reader.get_voxel_size.return_value = ([1.0, 0.5, 0.5], b"um")
+        mock_reader.get_shape.return_value = (64, 128, 256)
+        mock_reader.get_dtype.return_value = np.dtype("uint16")
+        mock_reader.get_chunks.return_value = (32, 64, 128)
+        mock_reader_cls.return_value.__enter__ = Mock(return_value=mock_reader)
+        mock_reader_cls.return_value.__exit__ = Mock(return_value=False)
+
+        # Mock Path
+        mock_output_path = MagicMock()
+        mock_output_path.__truediv__ = Mock(return_value=mock_output_path)
+        mock_output_path.__str__ = Mock(return_value="/output/test.ome.zarr")
+        mock_path_cls.return_value = mock_output_path
+
+        # Mock TensorStore
+        mock_store = MagicMock()
+        mock_ts_open.return_value.result.return_value = mock_store
+
+        # Mock process_single_shard
+        mock_process_shard.return_value = {
+            "shard_index": (0, 0, 0),
+            "bytes_written": 1024 * 1024,
+            "elapsed_seconds": 0.5,
+        }
+
+        # Mock metadata writer
+        mock_write_ome.return_value = {"multiscales": []}
+
+        imaris_to_zarr_distributed(
+            imaris_path="/input/test.ims",
+            output_path="/output",
+            chunk_shape=(32, 64, 128),
+            shard_shape=(64, 128, 256),
+            n_lvls=3,
+            channel_name="ch0",
+            stack_name="test.ome.zarr",
+            bucket_name=None,
+            dask_client=None,
+            translate_pyramid_levels=False,  # Default path
+        )
+
+        # ts.open should be called only once for the base level
+        self.assertEqual(mock_ts_open.call_count, 1)
+
+        # create_downsample_levels should be called for pyramid generation
+        mock_downsample.assert_called_once()
+        call_kwargs = mock_downsample.call_args[1]
+        self.assertEqual(call_kwargs["n_levels"], 3)
 
 
 class TestCreateShardTasksFunction(unittest.TestCase):
