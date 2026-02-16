@@ -286,7 +286,7 @@ class TestLiveImsToZarr(unittest.TestCase):
 
             print("✓ All properties read successfully")
 
-    # @unittest.skip("S3 write test - run manually when needed")
+    @unittest.skip("S3 write test - run manually when needed")
     def test_imaris_reader_chunking_strategy(self):
         """Report Imaris chunking strategy and per-dimension chunk counts"""
         if not self.ims_files:
@@ -396,7 +396,7 @@ class TestLiveImsToZarr(unittest.TestCase):
 
             print("\n✓ Pyramid generated successfully")
 
-    # @unittest.skip("S3 write test - run manually when needed")
+    @unittest.skip("S3 write test - run manually when needed")
     def test_imaris_to_zarr_writer_single_file(self):
         """Test full conversion pipeline: IMS -> Zarr with single file"""
         if not self.ims_files:
@@ -476,7 +476,7 @@ class TestLiveImsToZarr(unittest.TestCase):
 
     print("\n✓ Conversion completed successfully")
 
-    # @unittest.skip("S3 write test - run manually when needed")
+    @unittest.skip("S3 write test - run manually when needed")
     def test_imaris_to_zarr_writer_custom_voxel_size(self):
         """Test conversion with custom voxel size override"""
         if not self.ims_files:
@@ -752,11 +752,12 @@ class TestLiveImsToZarr(unittest.TestCase):
         # Test with different shard sizes
         chunk_shape = (128, 128, 128)
         shard_shape = (256, 256, 256)  # ~32MB per shard for uint16
-        n_lvls = 1
+        n_lvls = 3
 
         print(f"  Chunk shape: {chunk_shape}")
         print(f"  Shard shape: {shard_shape}")
         print(f"  Pyramid levels: {n_lvls}")
+        print(f"  translate_pyramid_levels: True")
 
         # Get shard info before conversion
         with ImarisReader(str(ims_file)) as reader:
@@ -790,6 +791,7 @@ class TestLiveImsToZarr(unittest.TestCase):
                 codec_level=3,
                 bucket_name=None,  # Local filesystem
                 dask_client=None,  # Sequential processing
+                translate_pyramid_levels=True,
             )
 
         # Calculate throughput
@@ -813,7 +815,22 @@ class TestLiveImsToZarr(unittest.TestCase):
 
     @unittest.skip("Distributed S3 test - run manually when needed")
     def test_imaris_to_zarr_distributed_to_s3(self):
-        """Test distributed worker-centric conversion to S3"""
+        """Test distributed worker-centric conversion to S3 with Dask.
+
+        Benchmarks multiple worker configurations to find optimal throughput.
+
+        ============================================================
+        BENCHMARK RESULTS
+        ============================================================
+        File: tile_000000_ch_488.ims (9.63 GB)
+        Shard: (512, 512, 512), Levels: 3
+        Workers   Time (s)     GB/s    Peak MB
+        ----------------------------------------
+                4      143.0    0.067        163
+                8      115.2    0.084        168
+                16      114.8    0.084        178
+        ============================================================
+        """
         if not self.ims_files:
             self.skipTest("No IMS files found in data directory")
 
@@ -822,97 +839,108 @@ class TestLiveImsToZarr(unittest.TestCase):
         # S3 test configuration
         s3_bucket = "aind-scratch-data"
         s3_prefix = "exaSPIM_683791-screen_2026-01-26_14-53-41"
-        stack_name = f"{ims_file.stem}_distributed.ome.zarr"
-        s3_output_path = f"s3://{s3_bucket}/{s3_prefix}/{stack_name}"
-
-        print(f"\n{'='*60}")
-        print("Testing distributed worker-centric conversion to S3:")
-        print(f"{'='*60}")
-        input_size_gb = ims_file.stat().st_size / (1024**3)
-        print(f"  Input: {ims_file.name} ({input_size_gb:.2f} GB)")
-        print(f"  S3 Output: {s3_output_path}")
 
         # Larger shards for S3 efficiency
         chunk_shape = (128, 128, 128)
         shard_shape = (512, 512, 512)  # ~256MB per shard
-        n_lvls = 1
+        n_lvls = 3
 
-        print(f"  Chunk shape: {chunk_shape}")
-        print(f"  Shard shape: {shard_shape}")
-        print(f"  Pyramid levels: {n_lvls}")
+        input_size_gb = ims_file.stat().st_size / (1024**3)
 
         # Get shard info
         with ImarisReader(str(ims_file)) as reader:
             shape = reader.get_shape()
-            print(f"  Data shape: {shape}")
 
         import math
-
         shard_grid = tuple(
             math.ceil(s / sh) for s, sh in zip(shape, shard_shape)
         )
         total_shards = shard_grid[0] * shard_grid[1] * shard_grid[2]
+
+        # Benchmark with different worker counts
+        worker_configs = [4, 8, 16]
+
+        print(f"\n{'='*60}")
+        print("Benchmarking distributed S3 upload with Dask")
+        print(f"{'='*60}")
+        print(f"  Input: {ims_file.name} ({input_size_gb:.2f} GB)")
+        print(f"  Data shape: {shape}")
+        print(f"  Chunk: {chunk_shape}  Shard: {shard_shape}")
         print(f"  Shard grid: {shard_grid} = {total_shards} total shards")
+        print(f"  Pyramid levels: {n_lvls} (translate from Imaris)")
+        print(f"  Worker configs to test: {worker_configs}")
+        print(f"{'='*60}")
 
-        # Run conversion (sequential - no Dask for this test)
-        with timed_operation(
-            f"Distributed IMS to S3 Zarr ({ims_file.name})",
-            interval=0.5,
-        ) as stats:
-            result_path = imaris_to_zarr_distributed(
-                imaris_path=str(ims_file),
-                output_path=s3_prefix,
-                voxel_size=None,
-                chunk_shape=chunk_shape,
-                shard_shape=shard_shape,
-                n_lvls=n_lvls,
-                channel_name=ims_file.stem,
-                stack_name=stack_name,
-                codec="zstd",
-                codec_level=3,
-                bucket_name=s3_bucket,
-                dask_client=None,  # Sequential for this test
+        from dask.distributed import Client, LocalCluster
+
+        results = []
+
+        for n_workers in worker_configs:
+            stack_name = (
+                f"{ims_file.stem}_dask_{n_workers}w.ome.zarr"
             )
+            s3_output = f"s3://{s3_bucket}/{s3_prefix}/{stack_name}"
 
-        # Calculate throughput
-        if stats.get("elapsed_seconds", 0) > 0:
-            throughput = input_size_gb / stats["elapsed_seconds"]
-            print(f"\n  📈 Throughput: {throughput:.2f} GB/s")
-            print(
-                f"  Peak memory: {stats.get('memory_mb', {}).get('max', 0):.1f} MB"
+            print(f"\n--- {n_workers} workers ---")
+            print(f"  Output: {s3_output}")
+
+            cluster = LocalCluster(
+                n_workers=n_workers, threads_per_worker=1
             )
+            client = Client(cluster)
+            print(f"  Dashboard: {client.dashboard_link}")
 
-        print(f"  Result path: {result_path}")
+            try:
+                with timed_operation(
+                    f"{n_workers} workers", interval=0.5
+                ) as stats:
+                    result_path = imaris_to_zarr_distributed(
+                        imaris_path=str(ims_file),
+                        output_path=s3_prefix,
+                        voxel_size=None,
+                        chunk_shape=chunk_shape,
+                        shard_shape=shard_shape,
+                        n_lvls=n_lvls,
+                        channel_name=ims_file.stem,
+                        stack_name=stack_name,
+                        codec="zstd",
+                        codec_level=3,
+                        bucket_name=s3_bucket,
+                        dask_client=client,
+                        translate_pyramid_levels=True,
+                    )
 
-        # Verify the S3 upload
-        try:
-            import boto3
-
-            s3_client = boto3.client("s3")
-
-            response = s3_client.list_objects_v2(
-                Bucket=s3_bucket,
-                Prefix=f"{s3_prefix}/{stack_name}/",
-                MaxKeys=10,
-            )
-
-            if "Contents" in response:
-                print(f"\n  📁 S3 Contents (first 10):")
-                for obj in response["Contents"][:10]:
-                    size_kb = obj["Size"] / 1024
-                    print(f"     - {obj['Key']} ({size_kb:.1f} KB)")
-                print(
-                    f"     ... and {response.get('KeyCount', 0)} total objects"
+                elapsed = stats.get("elapsed_seconds", 0)
+                throughput = (
+                    input_size_gb / elapsed if elapsed > 0 else 0
                 )
-            else:
-                print(f"\n  ⚠ No objects found at {s3_prefix}/{stack_name}/")
+                peak_mem = stats.get("memory_mb", {}).get("max", 0)
+                results.append(
+                    (n_workers, elapsed, throughput, peak_mem)
+                )
+                print(f"  ✓ {elapsed:.1f}s  {throughput:.3f} GB/s  "
+                      f"peak_mem={peak_mem:.0f} MB")
+            finally:
+                client.close()
+                cluster.close()
 
-        except ImportError:
-            print("\n  ⚠ boto3 not available for S3 verification")
-        except Exception as e:
-            print(f"\n  ⚠ S3 verification error: {e}")
+        # Print summary table
+        print(f"\n{'='*60}")
+        print("BENCHMARK RESULTS")
+        print(f"{'='*60}")
+        print(f"  File: {ims_file.name} ({input_size_gb:.2f} GB)")
+        print(f"  Shard: {shard_shape}, Levels: {n_lvls}")
+        print(f"  {'Workers':>8} {'Time (s)':>10} {'GB/s':>8} "
+              f"{'Peak MB':>10}")
+        print(f"  {'-'*40}")
+        for n_w, t, tp, mem in results:
+            print(f"  {n_w:>8} {t:>10.1f} {tp:>8.3f} {mem:>10.0f}")
+        print(f"{'='*60}")
 
-        print("\n✓ Distributed S3 upload completed successfully")
+        # Verify at least one upload worked
+        self.assertTrue(len(results) > 0)
+        # All runs should complete
+        self.assertEqual(len(results), len(worker_configs))
 
     @unittest.skip("Distributed Dask test - run manually with cluster")
     def test_imaris_to_zarr_distributed_with_dask(self):
