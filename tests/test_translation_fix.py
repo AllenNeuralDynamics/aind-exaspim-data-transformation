@@ -1,7 +1,9 @@
 """
 Test script to verify that translation fields are now included in zarr.json
 """
+
 import json
+
 from aind_exaspim_data_transformation.compress.omezarr_metadata import (
     write_ome_ngff_metadata,
 )
@@ -35,34 +37,34 @@ print(json.dumps(metadata_with_origin, indent=2))
 multiscales = metadata_with_origin["attributes"]["ome"]["multiscales"][0]
 datasets = multiscales["datasets"]
 
-print("\n" + "="*80)
+print("\n" + "=" * 80)
 print("Checking translation fields in each pyramid level:")
-print("="*80)
+print("=" * 80)
 
 all_have_translations = True
 for i, dataset in enumerate(datasets):
     transforms = dataset.get("coordinateTransformations", [])
     has_translation = False
     translation_value = None
-    
+
     for transform in transforms:
         if transform.get("type") == "translation":
             has_translation = True
             translation_value = transform.get("translation")
             break
-    
+
     if has_translation:
         print(f"✓ Level {i}: HAS translation field: {translation_value}")
     else:
         print(f"✗ Level {i}: MISSING translation field")
         all_have_translations = False
 
-print("\n" + "="*80)
+print("\n" + "=" * 80)
 if all_have_translations:
     print("SUCCESS: All pyramid levels have translation fields!")
 else:
     print("FAILURE: Some pyramid levels are missing translation fields")
-print("="*80)
+print("=" * 80)
 
 # Verify the translation values follow the expected pattern
 print("\nVerifying translation values follow expected pattern:")
@@ -81,6 +83,6 @@ for i, dataset in enumerate(datasets):
             translation = transform.get("translation")
             print(f"  Level {i}: translation = {translation}")
 
-print("\n" + "="*80)
+print("\n" + "=" * 80)
 print("Test completed!")
-print("="*80)
+print("=" * 80)
