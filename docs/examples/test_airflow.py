@@ -120,6 +120,7 @@ def submit_exaspim_job(
     source: str,
     project_name: str = "MSMA Platform",
     subject_id: str | None = None,
+    single_tile_upload: bool = False,
 ) -> None:
     """Build and POST an ExaSPIM transformation job.
 
@@ -131,6 +132,9 @@ def submit_exaspim_job(
         Project name for the upload job.
     subject_id : str | None
         Subject ID. Derived from *source* folder name when ``None``.
+    single_tile_upload : bool
+        If True, only process the first tile for integration testing.
+        Default is False (process all tiles).
     """
     if subject_id is None:
         subject_id = _derive_subject_id(source)
@@ -148,6 +152,8 @@ def submit_exaspim_job(
     print(f"Partitions        : {num_partitions}")
     print(f"Memory / CPU      : {mem_mb:,} MB")
     print(f"Timeout           : {timeout_min} min")
+    if single_tile_upload:
+        print(f"Single tile mode  : ENABLED (testing first tile only)")
 
     exaspim_job_settings = {
         "input_source": source,
@@ -158,6 +164,7 @@ def submit_exaspim_job(
         "translate_imaris_pyramid": True,
         "partition_mode": "shard",
         "dask_workers": CPUS_PER_NODE,  # use all CPUs for distributed processing
+        "single_tile_upload": single_tile_upload,
     }
 
     custom_exaspim_task = Task(
@@ -238,6 +245,7 @@ def test_submit_exaspim_job():
         source=data_dir,
         project_name="MSMA Platform",
         subject_id="683791-screen",
+        single_tile_upload=True,  # Set to True for testing with a single tile
     )
 
 
@@ -266,12 +274,18 @@ def main():
         default=None,
         help="Subject ID. Derived from folder name if omitted.",
     )
+    parser.add_argument(
+        "--single-tile",
+        action="store_true",
+        help="Process only the first tile (for integration testing).",
+    )
     args = parser.parse_args()
 
     submit_exaspim_job(
         source=args.input_folder,
         project_name=args.project_name,
         subject_id=args.subject_id,
+        single_tile_upload=args.single_tile,
     )
 
 
