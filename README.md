@@ -3,8 +3,8 @@
 [![License](https://img.shields.io/badge/license-MIT-brightgreen)](LICENSE)
 ![Code Style](https://img.shields.io/badge/code%20style-black-black)
 [![semantic-release: angular](https://img.shields.io/badge/semantic--release-angular-e10079?logo=semantic-release)](https://github.com/semantic-release/semantic-release)
-![Interrogate](https://img.shields.io/badge/interrogate-92.0%25-brightgreen)
-![Coverage](https://img.shields.io/badge/coverage-87%25-yellow)
+![Interrogate](https://img.shields.io/badge/interrogate-90.8%25-brightgreen)
+![Coverage](https://img.shields.io/badge/coverage-83%25-yellow)
 ![Python](https://img.shields.io/badge/python->=3.12-blue?logo=python)
 
 ## Usage
@@ -44,3 +44,38 @@ Alternatively, if using `uv`, run
 ```bash
 uv sync
 ```
+
+## Features
+
+### Single Tile Upload Mode
+
+For integration testing and performance validation of very large datasets, the package supports a `single_tile_upload` mode. When enabled, only the first tile/file from the dataset is processed, while still maintaining full horizontal scaling across workers.
+
+**Use Case**: Testing upload performance on representative data (e.g., 6TB tile) without processing the entire dataset (e.g., 120TB).
+
+**Configuration**:
+```json
+{
+    "input_source": "s3://bucket/dataset",
+    "output_directory": "/scratch/output",
+    "s3_location": "s3://bucket/zarr-output",
+    "num_of_partitions": 16,
+    "partition_to_process": 0,
+    "partition_mode": "shard",
+    "single_tile_upload": true
+}
+```
+
+**Key Points**:
+- The first tile is selected after deterministic sorting (all workers select the same file)
+- The selected tile is still distributed across workers using the configured partitioning strategy
+- Works with both `shard` and `file` partition modes
+- Default value is `false` for backward compatibility
+
+**Benefits**:
+- ~95% cost reduction for integration tests
+- Faster iteration cycles for debugging and optimization
+- Realistic performance testing with representative data volume
+- Same code paths as production (just with restricted input scope)
+
+For more details, see [Single Tile Upload Design Document](docs/SINGLE_TILE_UPLOAD_DESIGN.md).
