@@ -142,6 +142,50 @@ class TestImarisJobSettings(unittest.TestCase):
             )
             self.assertEqual(settings.downsample_mode, mode)
 
+    def test_single_tile_upload_default(self):
+        """Test single_tile_upload defaults to False"""
+        settings = ImarisJobSettings(
+            input_source="/path/to/input",
+            output_directory="/path/to/output",
+            num_of_partitions=4,
+            partition_to_process=0,
+        )
+        self.assertFalse(settings.single_tile_upload)
+
+    def test_single_tile_upload_explicit_true(self):
+        """Test single_tile_upload can be set to True"""
+        settings = ImarisJobSettings(
+            input_source="/path/to/input",
+            output_directory="/path/to/output",
+            num_of_partitions=4,
+            partition_to_process=0,
+            single_tile_upload=True,
+        )
+        self.assertTrue(settings.single_tile_upload)
+
+    def test_single_tile_upload_explicit_false(self):
+        """Test single_tile_upload can be explicitly set to False"""
+        settings = ImarisJobSettings(
+            input_source="/path/to/input",
+            output_directory="/path/to/output",
+            num_of_partitions=4,
+            partition_to_process=0,
+            single_tile_upload=False,
+        )
+        self.assertFalse(settings.single_tile_upload)
+
+    def test_single_tile_upload_json_parsing(self):
+        """Test single_tile_upload parses correctly from JSON"""
+        json_config = """{
+            "input_source": "/path/to/input",
+            "output_directory": "/path/to/output",
+            "num_of_partitions": 4,
+            "partition_to_process": 0,
+            "single_tile_upload": true
+        }"""
+        settings = ImarisJobSettings.model_validate_json(json_config)
+        self.assertTrue(settings.single_tile_upload)
+
 
 if __name__ == "__main__":
     unittest.main()

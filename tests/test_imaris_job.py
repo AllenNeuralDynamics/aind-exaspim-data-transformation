@@ -896,6 +896,147 @@ class TestImarisCompressionJob(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         mock_upload.assert_not_called()  # Not called for partition 1
 
+    @patch("aind_exaspim_data_transformation.imaris_job.Path")
+    def test_single_tile_upload_sorted_paths(self, mock_path_cls):
+        """Test single_tile_upload filters to first tile in sorted mode"""
+        settings = ImarisJobSettings(
+            input_source="/fake/input",
+            output_directory="/fake/output",
+            num_of_partitions=4,
+            partition_to_process=0,
+            single_tile_upload=True,
+        )
+        job = ImarisCompressionJob(job_settings=settings)
+
+        # Mock Path objects for multiple files
+        mock_file1 = MagicMock(spec=Path)
+        mock_file1.is_file.return_value = True
+        mock_file1.name = "tile_001.ims"
+        mock_file1.__str__ = lambda x: "/fake/input/tile_001.ims"
+
+        mock_file2 = MagicMock(spec=Path)
+        mock_file2.is_file.return_value = True
+        mock_file2.name = "tile_002.ims"
+        mock_file2.__str__ = lambda x: "/fake/input/tile_002.ims"
+
+        mock_file3 = MagicMock(spec=Path)
+        mock_file3.is_file.return_value = True
+        mock_file3.name = "tile_003.ims"
+        mock_file3.__str__ = lambda x: "/fake/input/tile_003.ims"
+
+        # Mock the Path constructor and glob
+        mock_path_instance = MagicMock()
+        mock_path_instance.glob.return_value = [
+            mock_file3,
+            mock_file1,
+            mock_file2,
+        ]
+        mock_path_cls.return_value = mock_path_instance
+
+        # Get sorted stack paths
+        result = job._get_sorted_stack_paths()
+
+        # Should only return first file after sorting
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].name, "tile_001.ims")
+
+    @patch("aind_exaspim_data_transformation.imaris_job.Path")
+    def test_single_tile_upload_partitioned_paths(self, mock_path_cls):
+        """Test single_tile_upload filters to first tile in file partition mode"""
+        settings = ImarisJobSettings(
+            input_source="/fake/input",
+            output_directory="/fake/output",
+            num_of_partitions=4,
+            partition_to_process=0,
+            single_tile_upload=True,
+            partition_mode="file",
+        )
+        job = ImarisCompressionJob(job_settings=settings)
+
+        # Mock Path objects for multiple files
+        mock_file1 = MagicMock(spec=Path)
+        mock_file1.is_file.return_value = True
+        mock_file1.name = "tile_001.ims"
+        mock_file1.__str__ = lambda x: "/fake/input/tile_001.ims"
+
+        mock_file2 = MagicMock(spec=Path)
+        mock_file2.is_file.return_value = True
+        mock_file2.name = "tile_002.ims"
+        mock_file2.__str__ = lambda x: "/fake/input/tile_002.ims"
+
+        mock_file3 = MagicMock(spec=Path)
+        mock_file3.is_file.return_value = True
+        mock_file3.name = "tile_003.ims"
+        mock_file3.__str__ = lambda x: "/fake/input/tile_003.ims"
+
+        # Mock the Path constructor and glob
+        mock_path_instance = MagicMock()
+        mock_path_instance.glob.return_value = [
+            mock_file2,
+            mock_file3,
+            mock_file1,
+        ]
+        mock_path_cls.return_value = mock_path_instance
+
+        # Get partitioned list
+        result = job._get_partitioned_list_of_stack_paths()
+
+        # Should partition single file across all partitions
+        self.assertEqual(len(result), 4)
+        # First partition gets the file
+        self.assertEqual(len(result[0]), 1)
+        self.assertEqual(result[0][0].name, "tile_001.ims")
+        # Other partitions are empty
+        self.assertEqual(len(result[1]), 0)
+        self.assertEqual(len(result[2]), 0)
+        self.assertEqual(len(result[3]), 0)
+
+    @patch("aind_exaspim_data_transformation.imaris_job.Path")
+    def test_backward_compatibility_multi_tile(self, mock_path_cls):
+        """Test default behavior processes all tiles (backward compatibility)"""
+        settings = ImarisJobSettings(
+            input_source="/fake/input",
+            output_directory="/fake/output",
+            num_of_partitions=2,
+            partition_to_process=0,
+            # single_tile_upload not set (defaults to False)
+        )
+        job = ImarisCompressionJob(job_settings=settings)
+
+        # Mock Path objects for multiple files
+        mock_file1 = MagicMock(spec=Path)
+        mock_file1.is_file.return_value = True
+        mock_file1.name = "tile_001.ims"
+        mock_file1.__str__ = lambda x: "/fake/input/tile_001.ims"
+
+        mock_file2 = MagicMock(spec=Path)
+        mock_file2.is_file.return_value = True
+        mock_file2.name = "tile_002.ims"
+        mock_file2.__str__ = lambda x: "/fake/input/tile_002.ims"
+
+        mock_file3 = MagicMock(spec=Path)
+        mock_file3.is_file.return_value = True
+        mock_file3.name = "tile_003.ims"
+        mock_file3.__str__ = lambda x: "/fake/input/tile_003.ims"
+
+        # Mock the Path constructor and glob
+        mock_path_instance = MagicMock()
+        mock_path_instance.glob.return_value = [
+            mock_file1,
+            mock_file2,
+            mock_file3,
+        ]
+        mock_path_cls.return_value = mock_path_instance
+
+        # Get sorted stack paths
+        result = job._get_sorted_stack_paths()
+
+        # Should return all tiles (existing behavior)
+        self.assertEqual(len(result), 3)
+        self.assertEqual(result[0].name, "tile_001.ims")
+        self.assertEqual(result[1].name, "tile_002.ims")
+        self.assertEqual(result[2].name, "tile_003.ims")
+
 
 class TestJobEntrypoint(unittest.TestCase):
     """Test suite for job_entrypoint function"""
