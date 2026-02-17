@@ -71,6 +71,16 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
 
         # Important to sort paths so every node computes the same list
         all_stack_paths.sort(key=lambda x: str(x))
+
+        # Filter to single tile if requested
+        if self.job_settings.single_tile_upload and all_stack_paths:
+            logging.info(
+                "Single tile upload mode enabled (file partition mode): "
+                "selecting first tile '%s'",
+                all_stack_paths[0].name,
+            )
+            all_stack_paths = all_stack_paths[:1]
+
         return self.partition_list(
             all_stack_paths, self.job_settings.num_of_partitions
         )
@@ -90,6 +100,15 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
                     all_stack_paths.append(p)
 
         all_stack_paths.sort(key=lambda x: str(x))
+
+        # Filter to single tile if requested
+        if self.job_settings.single_tile_upload and all_stack_paths:
+            logging.info(
+                "Single tile upload mode enabled: selecting first tile '%s'",
+                all_stack_paths[0].name,
+            )
+            all_stack_paths = all_stack_paths[:1]
+
         return all_stack_paths
 
     @staticmethod
