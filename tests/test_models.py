@@ -55,7 +55,7 @@ class TestImarisJobSettings(unittest.TestCase):
             partition_to_process=0,
         )
 
-        self.assertEqual(settings.chunk_size, [128, 128, 128])
+        self.assertEqual(settings.chunk_size, [128, 256, 256])
 
     def test_default_scale_factor(self):
         """Test default scale factor"""

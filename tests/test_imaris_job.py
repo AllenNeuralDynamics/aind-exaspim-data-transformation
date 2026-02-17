@@ -466,10 +466,22 @@ class TestImarisCompressionJob(unittest.TestCase):
 
     @patch("aind_exaspim_data_transformation.imaris_job.time")
     def test_run_job(self, mock_time):
-        """Test run_job method"""
+        """Test run_job method with file-level partitioning"""
         mock_time.return_value = 1000.0
 
-        job = ImarisCompressionJob(job_settings=self.test_settings)
+        settings = ImarisJobSettings(
+            input_source="/fake/input",
+            output_directory="/fake/output",
+            num_of_partitions=2,
+            partition_to_process=0,
+            compressor_name=CompressorName.BLOSC,
+            compressor_kwargs={"cname": "zstd", "clevel": 3, "shuffle": 1},
+            chunk_size=[128, 128, 128],
+            scale_factor=[2, 2, 2],
+            downsample_levels=3,
+            partition_mode="file",
+        )
+        job = ImarisCompressionJob(job_settings=settings)
 
         with patch.object(
             job, "_get_partitioned_list_of_stack_paths"
@@ -487,6 +499,38 @@ class TestImarisCompressionJob(unittest.TestCase):
         mock_get_list.assert_called_once()
         mock_upload.assert_called_once()  # partition 0
         mock_write.assert_called_once()
+
+    @patch("aind_exaspim_data_transformation.imaris_job.time")
+    def test_run_job_shard_partition_mode(self, mock_time):
+        """Test run_job method with shard-level partitioning"""
+        mock_time.return_value = 1000.0
+
+        settings = ImarisJobSettings(
+            input_source="/fake/input",
+            output_directory="/fake/output",
+            num_of_partitions=2,
+            partition_to_process=0,
+            partition_mode="shard",
+            chunk_size=[128, 128, 128],
+            scale_factor=[2, 2, 2],
+            downsample_levels=3,
+        )
+        job = ImarisCompressionJob(job_settings=settings)
+
+        with patch.object(job, "_get_sorted_stack_paths") as mock_sorted:
+            with patch.object(
+                job, "_upload_derivatives_folder"
+            ) as mock_upload:
+                with patch.object(job, "_run_shard_partitioned") as mock_shard:
+                    mock_sorted.return_value = []
+
+                    response = job.run_job()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Job finished", response.message)
+        mock_sorted.assert_called_once()
+        mock_upload.assert_called_once()  # partition 0
+        mock_shard.assert_called_once_with([])
 
     @patch(
         "aind_exaspim_data_transformation.imaris_job.imaris_to_zarr_distributed"

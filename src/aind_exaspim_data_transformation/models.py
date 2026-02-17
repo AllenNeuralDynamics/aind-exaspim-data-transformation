@@ -62,7 +62,7 @@ class ImarisJobSettings(BasicJobSettings):
         title="Shard Size",
     )
     chunk_size: List[int] = Field(
-        default=[128, 128, 128],  # Default list with three integers
+        default=[128, 256, 256],  # Default list with three integers
         description="Chunk size in axis, a list of three integers",
         title="Chunk Size",
     )
@@ -107,7 +107,7 @@ class ImarisJobSettings(BasicJobSettings):
         title="Translate Imaris Pyramid",
     )
     dask_workers: int = Field(
-        default=0,
+        default=4,
         description=(
             "Number of Dask workers for distributed processing. "
             "If 0, processing is sequential (no Dask cluster). "
@@ -116,4 +116,14 @@ class ImarisJobSettings(BasicJobSettings):
             "an external client."
         ),
         title="Dask Workers",
+    )
+
+    partition_mode: Literal["file", "shard"] = Field(
+        default="shard",
+        description=(
+            "Partitioning granularity. 'file' = legacy round-robin over files. "
+            "'shard' = round-robin over (file, shard_index) tuples for sub-file "
+            "parallelism (required for multi-worker-per-file)."
+        ),
+        title="Partition Mode",
     )

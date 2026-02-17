@@ -6,13 +6,14 @@ import os
 import sys
 from pathlib import Path
 from time import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple, cast
 from urllib.parse import urlparse
 
 from aind_data_transformation.core import GenericEtl, JobResponse, get_parser
 from packaging import version
 
 from aind_exaspim_data_transformation.compress.imaris_to_zarr import (
+    enumerate_shard_indices,
     imaris_to_zarr_distributed,
     imaris_to_zarr_parallel,
     imaris_to_zarr_translate_pyramid,
@@ -74,6 +75,23 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
             all_stack_paths, self.job_settings.num_of_partitions
         )
 
+    def _get_sorted_stack_paths(self) -> List[Path]:
+        """Return a deterministically sorted list of stack paths."""
+        all_stack_paths: List[Path] = []
+
+        for p in Path(self.job_settings.input_source).glob("**/*.ims"):
+            if p.is_file():
+                all_stack_paths.append(p)
+
+        if not all_stack_paths:
+            logging.info("No .ims files found, searching for .h5 files...")
+            for p in Path(self.job_settings.input_source).glob("**/*.h5"):
+                if p.is_file():
+                    all_stack_paths.append(p)
+
+        all_stack_paths.sort(key=lambda x: str(x))
+        return all_stack_paths
+
     @staticmethod
     def _get_voxel_resolution(acquisition_path: Path) -> List[float]:
         """
@@ -94,7 +112,9 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
         schema_version = acquisition_config.get("schema_version")
         logging.info(f"Schema version: {schema_version}")
 
-        if version.parse(schema_version) >= version.parse("2.0.0"):
+        schema_version_str = schema_version or "0.0.0"
+
+        if version.parse(schema_version_str) >= version.parse("2.0.0"):
             return ImarisCompressionJob._get_voxel_resolution_schema_2(
                 acquisition_config
             )
@@ -210,11 +230,20 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
 
         compressor = self._get_compressor()
 
+        input_source_path = Path(self.job_settings.input_source)
+        chunk_shape: Tuple[int, int, int] = cast(
+            Tuple[int, int, int], tuple(self.job_settings.chunk_size)
+        )
+        shard_shape: Tuple[int, int, int] = cast(
+            Tuple[int, int, int], tuple(self.job_settings.shard_size)
+        )
+        scale_factor: Tuple[int, int, int] = cast(
+            Tuple[int, int, int], tuple(self.job_settings.scale_factor)
+        )
+
         # Try to get voxel resolution from acquisition.json if it exists
         # Otherwise, it will be extracted from each Imaris file individually
-        acquisition_path = self.job_settings.input_source.joinpath(
-            "acquisition.json"
-        )
+        acquisition_path = input_source_path.joinpath("acquisition.json")
 
         voxel_size_zyx = None
         if acquisition_path.exists():
@@ -272,8 +301,8 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
                         imaris_path=str(stack),
                         output_path=str(output_path),
                         voxel_size=voxel_size_zyx,
-                        chunk_shape=tuple(self.job_settings.chunk_size),
-                        shard_shape=tuple(self.job_settings.shard_size),
+                        chunk_shape=chunk_shape,
+                        shard_shape=shard_shape,
                         n_lvls=self.job_settings.downsample_levels,
                         channel_name=stack_name,
                         stack_name=f"{stack_name}.ome.zarr",
@@ -320,10 +349,10 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
                             imaris_path=str(stack),
                             output_path=str(output_path),
                             voxel_size=voxel_size_zyx,
-                            chunk_shape=tuple(self.job_settings.chunk_size),
-                            shard_shape=tuple(self.job_settings.shard_size),
+                            chunk_shape=chunk_shape,
+                            shard_shape=shard_shape,
                             n_lvls=self.job_settings.downsample_levels,
-                            scale_factor=tuple(self.job_settings.scale_factor),
+                            scale_factor=scale_factor,
                             downsample_mode=self.job_settings.downsample_mode,
                             channel_name=stack_name,
                             stack_name=f"{stack_name}.ome.zarr",
@@ -375,25 +404,206 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
             utils.sync_dir_to_s3(derivatives_path, s3_derivatives_dir)
             logging.info(f"{derivatives_path} uploaded to s3.")
 
+    def _build_global_shard_task_list(
+        self, stack_paths: List[Path]
+    ) -> List[tuple[Path, tuple[int, int, int]]]:
+        """Enumerate all (file, shard_index) pairs across all stacks."""
+
+        shard_shape: Tuple[int, int, int] = cast(
+            Tuple[int, int, int], tuple(self.job_settings.shard_size)
+        )
+        tasks: List[tuple[Path, tuple[int, int, int]]] = []
+
+        for stack_path in stack_paths:
+            with ImarisReader(str(stack_path)) as reader:
+                data_shape = cast(
+                    Tuple[int, int, int], tuple(reader.get_shape())
+                )
+            for shard_idx in enumerate_shard_indices(data_shape, shard_shape):
+                tasks.append((stack_path, shard_idx))
+
+        return tasks
+
+    def _run_shard_partitioned(self, all_stacks: List[Path]):
+        """Process shard-level work across all files for this partition."""
+
+        global_tasks = self._build_global_shard_task_list(all_stacks)
+        logging.info(
+            "Global shard task list: %s shards across %s files",
+            len(global_tasks),
+            len(all_stacks),
+        )
+
+        partitioned = self.partition_list(
+            global_tasks, self.job_settings.num_of_partitions
+        )
+        my_tasks = partitioned[self.job_settings.partition_to_process]
+        if not my_tasks:
+            logging.info(
+                "Worker %s: no shards assigned",
+                self.job_settings.partition_to_process,
+            )
+            return
+
+        # Try to read voxel size from acquisition.json once
+        acquisition_path = Path(self.job_settings.input_source).joinpath(
+            "acquisition.json"
+        )
+        voxel_size_zyx = None
+        if acquisition_path.exists():
+            try:
+                voxel_size_zyx = self._get_voxel_resolution(
+                    acquisition_path=acquisition_path
+                )
+                logging.info(
+                    "Using voxel size from acquisition.json: %s",
+                    voxel_size_zyx,
+                )
+            except Exception as exc:  # pylint: disable=broad-except
+                logging.warning(
+                    "Could not read acquisition.json: %s. "
+                    "Will extract voxel size from individual Imaris files.",
+                    exc,
+                )
+
+        # Group tasks by file
+        from collections import defaultdict
+
+        tasks_by_file: dict[Path, List[tuple[int, int, int]]] = defaultdict(
+            list
+        )
+        for stack_path, shard_idx in my_tasks:
+            tasks_by_file[stack_path].append(shard_idx)
+
+        # Create Dask client once and reuse across all files
+        dask_client = None
+        dask_cluster = None
+
+        if self.job_settings.dask_workers > 0:
+            try:
+                from dask.distributed import Client, LocalCluster
+
+                logging.info(
+                    "Creating Dask cluster with %s workers",
+                    self.job_settings.dask_workers,
+                )
+                dask_cluster = LocalCluster(
+                    n_workers=self.job_settings.dask_workers,
+                    threads_per_worker=1,
+                )
+                dask_client = Client(dask_cluster)
+                logging.info("Dask dashboard: %s", dask_client.dashboard_link)
+            except ImportError:
+                logging.warning(
+                    "dask.distributed not available, "
+                    "falling back to sequential processing"
+                )
+
+        try:
+            for stack_path, shard_indices in tasks_by_file.items():
+                self._process_file_shards(
+                    stack_path=stack_path,
+                    shard_indices=shard_indices,
+                    voxel_size_zyx=voxel_size_zyx,
+                    dask_client=dask_client,
+                )
+        finally:
+            if dask_client is not None:
+                dask_client.close()
+            if dask_cluster is not None:
+                dask_cluster.close()
+
+    def _process_file_shards(
+        self,
+        stack_path: Path,
+        shard_indices: List[tuple[int, int, int]],
+        voxel_size_zyx: Optional[List[float]] = None,
+        dask_client: Optional[Any] = None,
+    ) -> None:
+        """Write assigned shards (and pyramid levels) for a single file."""
+
+        if not shard_indices:
+            logging.info("No shards for %s", stack_path)
+            return
+
+        output_path = Path(self.job_settings.output_directory)
+        bucket_name = None
+
+        if self.job_settings.s3_location:
+            parsed = urlparse(self.job_settings.s3_location)
+            bucket_name = parsed.netloc
+            output_path = Path(parsed.path.lstrip("/"))
+
+        if voxel_size_zyx is None:
+            voxel_size_zyx = self._get_voxel_size_from_imaris(stack_path)
+
+        chunk_shape: Tuple[int, int, int] = cast(
+            Tuple[int, int, int], tuple(self.job_settings.chunk_size)
+        )
+        shard_shape: Tuple[int, int, int] = cast(
+            Tuple[int, int, int], tuple(self.job_settings.shard_size)
+        )
+        scale_factor: Tuple[int, int, int] = cast(
+            Tuple[int, int, int], tuple(self.job_settings.scale_factor)
+        )
+
+        logging.info(
+            "Worker %s processing %s shards for %s",
+            self.job_settings.partition_to_process,
+            len(shard_indices),
+            stack_path,
+        )
+
+        imaris_to_zarr_distributed(
+            imaris_path=str(stack_path),
+            output_path=str(output_path),
+            voxel_size=voxel_size_zyx,
+            chunk_shape=chunk_shape,
+            shard_shape=shard_shape,
+            n_lvls=self.job_settings.downsample_levels,
+            scale_factor=scale_factor,
+            downsample_mode=self.job_settings.downsample_mode,
+            channel_name=stack_path.stem,
+            stack_name=f"{stack_path.stem}.ome.zarr",
+            bucket_name=bucket_name,
+            dask_client=dask_client,
+            shard_indices=shard_indices,
+            translate_pyramid_levels=True,
+            partition_to_process=self.job_settings.partition_to_process,
+            num_of_partitions=self.job_settings.num_of_partitions,
+        )
+
     def run_job(self):
         """Main entrypoint to run the job."""
         job_start_time = time()
 
-        # Reading data within the SPIM folder
-        partitioned_list = self._get_partitioned_list_of_stack_paths()
-
-        # Upload derivatives folder
+        # Upload derivatives folder (only from partition 0)
         if self.job_settings.partition_to_process == 0:
             self._upload_derivatives_folder()
 
-        stacks_to_process = partitioned_list[
-            self.job_settings.partition_to_process
-        ]
+        if self.job_settings.partition_mode == "shard":
+            # Shard-level partitioning: each worker processes a subset of
+            # (file, shard_index) tuples across all files.
+            all_stacks = self._get_sorted_stack_paths()
+            logging.info(
+                "Using shard-level partitioning (partition %s of %s)",
+                self.job_settings.partition_to_process,
+                self.job_settings.num_of_partitions,
+            )
+            self._run_shard_partitioned(all_stacks)
+        else:
+            # File-level partitioning: each worker processes whole files.
+            partitioned_list = self._get_partitioned_list_of_stack_paths()
+            stacks_to_process = partitioned_list[
+                self.job_settings.partition_to_process
+            ]
+            self._write_stacks(stacks_to_process=stacks_to_process)
 
-        self._write_stacks(stacks_to_process=stacks_to_process)
         total_job_duration = time() - job_start_time
         return JobResponse(
-            status_code=200, message=f"Job finished in {total_job_duration}"
+            status_code=200,
+            message=f"Job finished in {total_job_duration}",
+            data=None,
         )
 
 
@@ -410,8 +620,8 @@ def job_entrypoint(sys_args: list):
     elif cli_args.config_file is not None:
         job_settings = ImarisJobSettings.from_config_file(cli_args.config_file)
     else:
-        # Construct settings from env vars
-        job_settings = ImarisJobSettings()
+        # Construct settings from env vars or defaults (backwards compatible)
+        job_settings = ImarisJobSettings()  # type: ignore[call-arg]
     job = ImarisCompressionJob(job_settings=job_settings)
     job_response = job.run_job()
     logging.info(job_response.model_dump_json())
