@@ -29,7 +29,7 @@ from aind_data_transfer_service.models.core import (
 
 # ── Configurable defaults ──────────────────────────────────────────
 IMAGE = "ghcr.io/allenneuraldynamics/aind-exaspim-data-transformation"
-IMAGE_VERSION = "dev-538e521"
+IMAGE_VERSION = "dev-18eaef6"
 ENDPOINT = "http://aind-data-transfer-service-dev"
 S3_BUCKET = "open"  # maps to aind-open-data-dev
 JOB_TYPE = "default"  # registered job type on the dev cluster
