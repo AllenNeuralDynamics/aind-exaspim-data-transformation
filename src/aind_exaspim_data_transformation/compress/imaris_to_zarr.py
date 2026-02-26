@@ -1517,6 +1517,7 @@ def imaris_to_zarr_distributed(
     translate_pyramid_levels: bool = False,
     partition_to_process: int = 0,
     num_of_partitions: int = 1,
+    origin: Optional[List[float]] = None,
 ) -> str:
     """
     Convert an Imaris file to OME-Zarr using distributed shard-per-worker processing.
@@ -1691,14 +1692,21 @@ def imaris_to_zarr_distributed(
             voxel_size, unit = reader.get_voxel_size()
             logger.info(f"Extracted voxel size: {voxel_size} {unit}")
 
-        # Get origin for proper coordinate transformations
-        origin = reader.get_origin()
-        logger.info(f"Extracted origin from Imaris: {origin}")
+        # Get origin for proper coordinate transformations.
+        # Prefer the caller-supplied origin (e.g. from acquisition.json)
+        # over the Imaris ExtMin values, which may be unreliable.
+        if origin is None:
+            origin = reader.get_origin()
+            logger.info(f"Extracted origin from Imaris ExtMin: {origin}")
+        else:
+            logger.info(f"Using caller-supplied origin: {origin}")
 
         logger.debug("Using voxel_size=%s", voxel_size)
 
         base_path = _data_path(0)
-        shape_3d = reader.get_shape(base_path)
+        # Use the authoritative metadata shape (no HDF5 chunk-alignment
+        # padding) so the zarr array shape matches the true image extent.
+        shape_3d = reader.get_metadata_shape()
         dtype = reader.get_dtype(base_path)
         native_chunks = reader.get_chunks(base_path)
 
@@ -1793,7 +1801,7 @@ def imaris_to_zarr_distributed(
             with ImarisReader(imaris_path) as reader:
                 lvl_shape_3d = cast(
                     Tuple[int, int, int],
-                    tuple(int(x) for x in reader.get_shape(lvl_data_path)),
+                    reader.get_true_shape_for_level(lvl),
                 )
 
             lvl_shape_5d = (1, 1) + tuple(lvl_shape_3d)
@@ -2071,6 +2079,7 @@ def imaris_to_zarr_translate_pyramid(
     codec_level: int = 3,
     bucket_name: Optional[str] = None,
     max_concurrent_writes: int = 16,
+    origin: Optional[List[float]] = None,
 ) -> str:
     """
     Convert Imaris file to OME-Zarr v3 by translating existing pyramids.
@@ -2184,9 +2193,14 @@ def imaris_to_zarr_translate_pyramid(
         else:
             logger.info(f"Using provided voxel size: {voxel_size}")
 
-        # Get origin for proper coordinate transformations
-        origin = reader.get_origin()
-        logger.info(f"Extracted origin from Imaris: {origin}")
+        # Get origin for proper coordinate transformations.
+        # Prefer the caller-supplied origin (e.g. from acquisition.json)
+        # over the Imaris ExtMin values, which may be unreliable.
+        if origin is None:
+            origin = reader.get_origin()
+            logger.info(f"Extracted origin from Imaris ExtMin: {origin}")
+        else:
+            logger.info(f"Using caller-supplied origin: {origin}")
 
         # Count available pyramid levels in Imaris file
         available_levels = _count_imaris_levels(reader)
@@ -2202,9 +2216,11 @@ def imaris_to_zarr_translate_pyramid(
 
         logger.info(f"Will translate {n_lvls} pyramid levels")
 
-        # Get shape and dtype from base resolution
+        # Get shape and dtype from base resolution.
+        # Use the authoritative metadata shape (no HDF5 chunk-alignment
+        # padding) so the zarr array shape matches the true image extent.
         base_path = _data_path(0)
-        shape_3d = reader.get_shape(base_path)
+        shape_3d = reader.get_metadata_shape()
         dtype = reader.get_dtype(base_path)
         native_chunks = reader.get_chunks(base_path)
 
@@ -2240,8 +2256,8 @@ def imaris_to_zarr_translate_pyramid(
         for level in range(n_lvls):
             imaris_data_path = _data_path(level)
 
-            # Get shape for this level
-            level_shape_3d = reader.get_shape(imaris_data_path)
+            # Get the true (unpadded) shape for this level.
+            level_shape_3d = reader.get_true_shape_for_level(level)
             level_shape_5d = (1, 1) + tuple(level_shape_3d)
             level_shapes.append(level_shape_5d)
             level_chunks = reader.get_chunks(imaris_data_path)

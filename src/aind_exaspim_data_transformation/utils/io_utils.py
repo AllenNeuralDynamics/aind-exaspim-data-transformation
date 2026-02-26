@@ -465,6 +465,63 @@ class ImarisReader:
             int(info.attrs["X"].tobytes()),
         )
 
+    def get_true_shape_for_level(self, level: int) -> Tuple[int, int, int]:
+        """
+        Return the true image shape for a given pyramid level, without
+        Imaris HDF5 chunk-alignment padding.
+
+        Imaris pads each HDF5 dataset to a multiple of its chunk size (64
+        voxels), so ``get_shape()`` may be larger than the actual image.
+        This method returns the unpadded dimensions.
+
+        Level 0 uses the authoritative ``DataSetInfo/Image`` metadata (Z/Y/X
+        attributes).  Coarser levels derive their true shape by computing the
+        actual per-level downsample ratios from the HDF5 dataset shapes and
+        applying those ratios to the true level-0 shape, preserving
+        anisotropic pyramids correctly.
+
+        Parameters
+        ----------
+        level : int
+            Resolution level index (0 = full resolution).
+
+        Returns
+        -------
+        Tuple[int, int, int]
+            True shape ``(Z, Y, X)`` for the requested level.
+        """
+
+        def _lvl_data_path(lvl: int) -> str:
+            return (
+                f"/DataSet/ResolutionLevel {lvl}"
+                f"/TimePoint 0/Channel 0/Data"
+            )
+
+        true_shape_0: Tuple[int, int, int] = self.get_metadata_shape()
+        if level == 0:
+            return true_shape_0
+
+        # Walk level transitions, computing downsample ratios from HDF5
+        # shapes (which are padded but give consistent ratios), and apply
+        # them to the true level-0 shape to get the true shape at each level.
+        current_hdf5: Tuple[int, ...] = self.get_shape(_lvl_data_path(0))
+        current_true: Tuple[int, ...] = true_shape_0
+
+        for lvl in range(1, level + 1):
+            next_hdf5: Tuple[int, ...] = self.get_shape(_lvl_data_path(lvl))
+            factors = tuple(
+                round(current_hdf5[i] / next_hdf5[i])
+                if next_hdf5[i] > 0
+                else 1
+                for i in range(3)
+            )
+            current_true = tuple(
+                math.ceil(current_true[i] / factors[i]) for i in range(3)
+            )
+            current_hdf5 = next_hdf5
+
+        return cast(Tuple[int, int, int], current_true)
+
     def get_chunks(
         self, data_path: str = DEFAULT_DATA_PATH
     ) -> Tuple[int, ...]:
