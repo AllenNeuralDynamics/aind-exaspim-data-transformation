@@ -1140,5 +1140,171 @@ class TestJobEntrypoint(unittest.TestCase):
         mock_settings_cls.assert_called_once_with()
 
 
+class TestGetTileTranslationFromAcquisition(unittest.TestCase):
+    """Tests for ImarisCompressionJob._get_tile_translation_from_acquisition."""
+
+    # Minimal acquisition.json payload covering schema v1.x
+    _ACQ_CONFIG = {
+        "schema_version": "1.0.4",
+        "tiles": [
+            {
+                "file_name": "tile_000000_ch_561.ims",
+                "coordinate_transformations": [
+                    {
+                        "type": "scale",
+                        "scale": ["0.748", "0.748", "1.0"],
+                    },
+                    {
+                        "type": "translation",
+                        # X=30.1108472 mm, Y=18.082368 mm, Z=7.1663 mm
+                        "translation": [
+                            "30.1108472",
+                            "18.082368",
+                            "7.1663",
+                        ],
+                    },
+                ],
+            },
+            {
+                "file_name": "tile_000000_ch_488.ims",
+                "coordinate_transformations": [
+                    {
+                        "type": "scale",
+                        "scale": ["0.748", "0.748", "1.0"],
+                    },
+                    {
+                        "type": "translation",
+                        "translation": ["10.0", "20.0", "5.0"],
+                    },
+                ],
+            },
+            {
+                # Tile with no translation transform (scale only)
+                "file_name": "tile_no_translation.ims",
+                "coordinate_transformations": [
+                    {"type": "scale", "scale": ["0.748", "0.748", "1.0"]}
+                ],
+            },
+        ],
+    }
+
+    def _make_acq_path(self, tmp_path, config=None):
+        """Write config to a temporary acquisition.json and return its Path."""
+        import json
+        import tempfile
+
+        acq_file = Path(tmp_path) / "acquisition.json"
+        with open(acq_file, "w") as f:
+            json.dump(config or self._ACQ_CONFIG, f)
+        return acq_file
+
+    @patch(
+        "aind_exaspim_data_transformation.imaris_job.utils.read_json_as_dict"
+    )
+    def test_returns_zyx_micrometers(self, mock_read):
+        """Translation is converted from mm XYZ → µm ZYX."""
+        mock_path = MagicMock()
+        mock_path.is_file.return_value = True
+        mock_read.return_value = self._ACQ_CONFIG
+
+        result = ImarisCompressionJob._get_tile_translation_from_acquisition(
+            mock_path, "tile_000000_ch_561.ims"
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(len(result), 3)
+        # Z = 7.1663 mm * 1000 = 7166.3 µm
+        self.assertAlmostEqual(result[0], 7166.3, places=3)
+        # Y = 18.082368 mm * 1000 = 18082.368 µm
+        self.assertAlmostEqual(result[1], 18082.368, places=3)
+        # X = 30.1108472 mm * 1000 = 30110.8472 µm
+        self.assertAlmostEqual(result[2], 30110.8472, places=3)
+
+    @patch(
+        "aind_exaspim_data_transformation.imaris_job.utils.read_json_as_dict"
+    )
+    def test_second_tile_independent_lookup(self, mock_read):
+        """Different tiles return their own translation values."""
+        mock_path = MagicMock()
+        mock_path.is_file.return_value = True
+        mock_read.return_value = self._ACQ_CONFIG
+
+        result = ImarisCompressionJob._get_tile_translation_from_acquisition(
+            mock_path, "tile_000000_ch_488.ims"
+        )
+
+        self.assertIsNotNone(result)
+        # Z = 5.0 mm * 1000, Y = 20.0 mm * 1000, X = 10.0 mm * 1000
+        self.assertAlmostEqual(result[0], 5000.0, places=3)
+        self.assertAlmostEqual(result[1], 20000.0, places=3)
+        self.assertAlmostEqual(result[2], 10000.0, places=3)
+
+    @patch(
+        "aind_exaspim_data_transformation.imaris_job.utils.read_json_as_dict"
+    )
+    def test_returns_none_for_missing_tile(self, mock_read):
+        """Returns None when the tile filename is not in the manifest."""
+        mock_path = MagicMock()
+        mock_path.is_file.return_value = True
+        mock_read.return_value = self._ACQ_CONFIG
+
+        result = ImarisCompressionJob._get_tile_translation_from_acquisition(
+            mock_path, "tile_999999_ch_561.ims"
+        )
+        self.assertIsNone(result)
+
+    @patch(
+        "aind_exaspim_data_transformation.imaris_job.utils.read_json_as_dict"
+    )
+    def test_returns_none_when_tile_has_no_translation(self, mock_read):
+        """Returns None when the matching tile has no translation transform."""
+        mock_path = MagicMock()
+        mock_path.is_file.return_value = True
+        mock_read.return_value = self._ACQ_CONFIG
+
+        result = ImarisCompressionJob._get_tile_translation_from_acquisition(
+            mock_path, "tile_no_translation.ims"
+        )
+        self.assertIsNone(result)
+
+    def test_returns_none_when_acquisition_file_absent(self):
+        """Returns None when acquisition.json does not exist on disk."""
+        missing_path = MagicMock()
+        missing_path.is_file.return_value = False
+
+        result = ImarisCompressionJob._get_tile_translation_from_acquisition(
+            missing_path, "tile_000000_ch_561.ims"
+        )
+        self.assertIsNone(result)
+
+    @patch(
+        "aind_exaspim_data_transformation.imaris_job.utils.read_json_as_dict"
+    )
+    def test_returns_none_on_parse_error(self, mock_read):
+        """Returns None (with a warning) when the JSON cannot be parsed."""
+        mock_path = MagicMock()
+        mock_path.is_file.return_value = True
+        mock_read.side_effect = ValueError("bad json")
+
+        result = ImarisCompressionJob._get_tile_translation_from_acquisition(
+            mock_path, "tile_000000_ch_561.ims"
+        )
+        self.assertIsNone(result)
+
+    @patch(
+        "aind_exaspim_data_transformation.imaris_job.utils.read_json_as_dict"
+    )
+    def test_returns_none_for_empty_tiles_list(self, mock_read):
+        """Returns None when the tiles array is empty."""
+        mock_path = MagicMock()
+        mock_path.is_file.return_value = True
+        mock_read.return_value = {"schema_version": "1.0.4", "tiles": []}
+
+        result = ImarisCompressionJob._get_tile_translation_from_acquisition(
+            mock_path, "tile_000000_ch_561.ims"
+        )
+        self.assertIsNone(result)
+
+
 if __name__ == "__main__":
     unittest.main()
