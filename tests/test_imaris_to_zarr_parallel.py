@@ -1129,6 +1129,7 @@ class TestImarisToZarrDistributed(unittest.TestCase):
         mock_reader = MagicMock()
         mock_reader.get_voxel_size.return_value = ([1.0, 0.5, 0.5], b"um")
         mock_reader.get_shape.return_value = (128, 256, 512)  # Multiple shards
+        mock_reader.get_metadata_shape.return_value = (128, 256, 512)
         mock_reader.get_dtype.return_value = np.dtype("uint16")
         mock_reader.get_chunks.return_value = (32, 64, 128)
         mock_reader_cls.return_value.__enter__ = Mock(return_value=mock_reader)
@@ -1463,6 +1464,10 @@ class TestTranslatePyramidLevels(unittest.TestCase):
             return (128, 256, 512)
 
         mock_reader.get_shape.side_effect = _get_shape
+        mock_reader.get_metadata_shape.return_value = (128, 256, 512)
+        mock_reader.get_true_shape_for_level.side_effect = (
+            lambda lvl: {0: (128, 256, 512), 1: (64, 128, 256), 2: (32, 64, 128)}.get(lvl, (128, 256, 512))
+        )
         mock_reader.get_dtype.return_value = np.dtype("uint16")
         mock_reader.get_chunks.return_value = (32, 64, 128)
         mock_reader_cls.return_value.__enter__ = Mock(return_value=mock_reader)
@@ -1583,6 +1588,10 @@ class TestTranslatePyramidLevels(unittest.TestCase):
             return (128, 256, 512)
 
         mock_reader.get_shape.side_effect = _get_shape
+        mock_reader.get_metadata_shape.return_value = (128, 256, 512)
+        mock_reader.get_true_shape_for_level.side_effect = (
+            lambda lvl: {0: (128, 256, 512), 1: (64, 128, 256)}.get(lvl, (128, 256, 512))
+        )
         mock_reader.get_dtype.return_value = np.dtype("uint16")
         mock_reader.get_chunks.return_value = (32, 64, 128)
         mock_reader_cls.return_value.__enter__ = Mock(return_value=mock_reader)

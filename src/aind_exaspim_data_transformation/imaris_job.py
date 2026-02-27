@@ -214,6 +214,105 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
 
         return [z, y, x]
 
+    @staticmethod
+    def _get_tile_translation_from_acquisition(
+        acquisition_path: Path,
+        tile_filename: str,
+    ) -> Optional[List[float]]:
+        """
+        Get the physical world-space translation for a specific tile from
+        acquisition.json.
+
+        Tile positions are matched by ``file_name`` within the ``tiles``
+        array. The function looks for a ``translation`` entry inside each
+        tile's ``coordinate_transformations`` list.
+
+        The acquisition.json schema stores tile positions in **millimetres**
+        (X, Y, Z order); this method converts them to **micrometres** in
+        **Z, Y, X** order so the result can be passed directly to
+        ``write_ome_ngff_metadata`` as the ``origin`` parameter.
+
+        .. note::
+            The mm → µm conversion factor assumes the snapshot of
+            aind-data-schema seen in production (schema_version 1.x).
+            Verify against a known tile by comparing the returned value to
+            expected neuroglancer world coordinates before relying on this
+            in production.
+
+        Parameters
+        ----------
+        acquisition_path : Path
+            Path to the ``acquisition.json`` file.
+        tile_filename : str
+            Basename of the Imaris file to look up (e.g.
+            ``"tile_000000_ch_561.ims"``).
+
+        Returns
+        -------
+        List[float] or None
+            Translation as ``[Z, Y, X]`` in micrometres, or ``None`` if the
+            file does not exist, the tile is not found in the manifest, or no
+            translation transform is present for that tile.
+        """
+        # acquisition.json stores tile positions in mm; convert to µm.
+        # NOTE: verify this factor against a real acquisition before
+        # deploying to a new instrument or schema version.
+        _MM_TO_UM = 1000.0
+
+        if not acquisition_path.is_file():
+            return None
+
+        try:
+            acquisition_config = utils.read_json_as_dict(acquisition_path)
+        except Exception as exc:  # pylint: disable=broad-except
+            logging.warning(
+                "Could not parse acquisition.json for tile translation: %s",
+                exc,
+            )
+            return None
+
+        for tile in acquisition_config.get("tiles", []):
+            if tile.get("file_name") != tile_filename:
+                continue
+
+            for transform in tile.get("coordinate_transformations", []):
+                if transform.get("type") != "translation":
+                    continue
+
+                raw = transform.get("translation", [])
+                if len(raw) != 3:
+                    logging.warning(
+                        "Unexpected translation length %d for tile %s; "
+                        "expected 3 (X, Y, Z).",
+                        len(raw),
+                        tile_filename,
+                    )
+                    return None
+
+                # acquisition.json: translation = [X, Y, Z] in mm
+                x_mm = float(raw[0])
+                y_mm = float(raw[1])
+                z_mm = float(raw[2])
+
+                translation_zyx_um = [
+                    z_mm * _MM_TO_UM,
+                    y_mm * _MM_TO_UM,
+                    x_mm * _MM_TO_UM,
+                ]
+                logging.info(
+                    "Tile %s: acquisition.json translation ZYX (µm) = %s",
+                    tile_filename,
+                    translation_zyx_um,
+                )
+                return translation_zyx_um
+
+        logging.warning(
+            "Tile '%s' not found in acquisition.json or has no translation "
+            "transform; falling back to Imaris ExtMin values.",
+            tile_filename,
+        )
+        return None
+
     def _get_compressor(self) -> Optional[Dict]:
         """
         Utility method to construct a compressor class.
@@ -300,6 +399,11 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
             if voxel_size_zyx is None:
                 voxel_size_zyx = self._get_voxel_size_from_imaris(stack)
 
+            # Look up this tile's world-space position from acquisition.json.
+            # Returns ZYX in µm, or None (fall back to Imaris ExtMin values).
+            tile_origin = self._get_tile_translation_from_acquisition(
+                acquisition_path, stack.name
+            )
             msg = (
                 f"Voxel resolution ZYX {voxel_size_zyx} for {stack} "
                 f"with name {stack_name} - output: {output_path} "
@@ -329,6 +433,7 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
                         max_concurrent_writes=(
                             self.job_settings.tensorstore_batch_size
                         ),
+                        origin=tile_origin,
                     )
                 else:
                     # Use distributed worker-centric processing
@@ -377,6 +482,7 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
                             stack_name=f"{stack_name}.ome.zarr",
                             bucket_name=bucket_name,
                             dask_client=dask_client,
+                            origin=tile_origin,
                         )
                     finally:
                         # Clean up Dask resources
@@ -525,6 +631,7 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
                     shard_indices=shard_indices,
                     voxel_size_zyx=voxel_size_zyx,
                     dask_client=dask_client,
+                    acquisition_path=acquisition_path,
                 )
         finally:
             if dask_client is not None:
@@ -538,6 +645,7 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
         shard_indices: List[tuple[int, int, int]],
         voxel_size_zyx: Optional[List[float]] = None,
         dask_client: Optional[Any] = None,
+        acquisition_path: Optional[Path] = None,
     ) -> None:
         """Write assigned shards (and pyramid levels) for a single file."""
 
@@ -573,6 +681,14 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
             stack_path,
         )
 
+        # Look up this tile's world-space position from acquisition.json.
+        # Returns ZYX in µm, or None (fall back to Imaris ExtMin values).
+        tile_origin = None
+        if acquisition_path is not None:
+            tile_origin = self._get_tile_translation_from_acquisition(
+                acquisition_path, stack_path.name
+            )
+
         imaris_to_zarr_distributed(
             imaris_path=str(stack_path),
             output_path=str(output_path),
@@ -590,6 +706,7 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
             translate_pyramid_levels=True,
             partition_to_process=self.job_settings.partition_to_process,
             num_of_partitions=self.job_settings.num_of_partitions,
+            origin=tile_origin,
         )
 
     def run_job(self):
