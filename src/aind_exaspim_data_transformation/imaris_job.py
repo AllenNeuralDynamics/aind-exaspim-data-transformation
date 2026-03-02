@@ -361,7 +361,8 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
 
         # Try to get voxel resolution from acquisition.json if it exists
         # Otherwise, it will be extracted from each Imaris file individually
-        acquisition_path = input_source_path.joinpath("acquisition.json")
+        # acquisition.json lives one level above the input_source (exaSPIM) folder
+        acquisition_path = input_source_path.parent.joinpath("acquisition.json")
 
         voxel_size_zyx = None
         if acquisition_path.exists():
@@ -571,7 +572,8 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
             return
 
         # Try to read voxel size from acquisition.json once
-        acquisition_path = Path(self.job_settings.input_source).joinpath(
+        # acquisition.json lives one level above the input_source (exaSPIM) folder
+        acquisition_path = Path(self.job_settings.input_source).parent.joinpath(
             "acquisition.json"
         )
         voxel_size_zyx = None
