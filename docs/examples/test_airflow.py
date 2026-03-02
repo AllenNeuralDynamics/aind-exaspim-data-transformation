@@ -29,16 +29,16 @@ from aind_data_transfer_service.models.core import (
 
 # ── Configurable defaults ──────────────────────────────────────────
 IMAGE = "ghcr.io/allenneuraldynamics/aind-exaspim-data-transformation"
-IMAGE_VERSION = "dev-18eaef6"
+IMAGE_VERSION = "dev-caf06f6"
 ENDPOINT = "http://aind-data-transfer-service-dev"
 S3_BUCKET = "open"  # maps to aind-open-data-dev
 JOB_TYPE = "default"  # registered job type on the dev cluster
 
 # Resource limits
-MAX_PARTITIONS = 32
+MAX_PARTITIONS = 64
 CPUS_PER_NODE = 4
 MIN_RAM_MB = 24_000
-MAX_RAM_MB = 40_000
+MAX_RAM_MB = 50_000
 SCHEDULING_OVERHEAD_MB = 1_300  # per tile, from profiling
 PROCESSING_OVERHEAD_MB = 4_400  # per shard, from profiling
 BUFFER_MB = 1_000
@@ -66,7 +66,7 @@ def _estimate_resources(
     # num_partitions = min(n_tiles, MAX_PARTITIONS)
     # tiles_per_partition = max(n_tiles // num_partitions, 1)
     # we want to run multiple partitions per file
-    num_partitions = 32
+    num_partitions = MAX_PARTITIONS
 
     # estimated_mem = (
     #     tiles_per_partition * SCHEDULING_OVERHEAD_MB
@@ -82,9 +82,7 @@ def _estimate_resources(
         MAX_RAM_MB // CPUS_PER_NODE,
     )
 
-    timeout_min = int(
-        (n_tiles * tile_size_mb / 1024) / PROCESSING_SPEED_MB_PER_HOUR + 60
-    )
+    timeout_min = int(24 * 60)
 
     return num_partitions, memory_per_cpu, timeout_min
 
@@ -220,6 +218,7 @@ def submit_exaspim_job(
             "register_data_asset": {"skip_task": True},
             "get_codeocean_asset_id": {"skip_task": True},
             "run_codeocean_pipeline": {"skip_task": True},
+            "remove_source_folders": {"skip_task": True},
         },
     )
 
@@ -236,16 +235,18 @@ def submit_exaspim_job(
 
 
 def test_submit_exaspim_job():
+    # dataset_name = "exaSPIM_718162_2026-01-29_19-28-50"
+    dataset_name = "exaSPIM_785688_2026-02-19_08-34-14"
     data_dir = (
-        "/allen/aind/stage/exaSPIM/"
-        "exaSPIM_683791-screen_2026-01-26_14-53-41/exaSPIM"
+        f"/allen/aind/stage/exaSPIM/"
+        f"{dataset_name}/exaSPIM"
     )
 
     submit_exaspim_job(
         source=data_dir,
         project_name="MSMA Platform",
-        subject_id="683791-screen",
-        single_tile_upload=True,  # Set to True for testing with a single tile
+        subject_id="785688",
+        single_tile_upload=False,  # Set to True for testing with a single tile
     )
 
 
