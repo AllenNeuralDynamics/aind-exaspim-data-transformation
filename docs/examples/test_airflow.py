@@ -29,7 +29,7 @@ from aind_data_transfer_service.models.core import (
 
 # ── Configurable defaults ──────────────────────────────────────────
 IMAGE = "ghcr.io/allenneuraldynamics/aind-exaspim-data-transformation"
-IMAGE_VERSION = "dev-caf06f6"
+IMAGE_VERSION = "dev-2bd972f"
 ENDPOINT = "http://aind-data-transfer-service-dev"
 S3_BUCKET = "open"  # maps to aind-open-data-dev
 JOB_TYPE = "default"  # registered job type on the dev cluster
@@ -246,7 +246,7 @@ def test_submit_exaspim_job():
         source=data_dir,
         project_name="MSMA Platform",
         subject_id="785688",
-        single_tile_upload=False,  # Set to True for testing with a single tile
+        single_tile_upload=True,  # Set to True for testing with a single tile
     )
 
 

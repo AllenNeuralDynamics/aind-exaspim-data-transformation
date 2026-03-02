@@ -1306,5 +1306,83 @@ class TestGetTileTranslationFromAcquisition(unittest.TestCase):
         self.assertIsNone(result)
 
 
+class TestBuildGlobalShardTaskList(unittest.TestCase):
+    """Tests for _build_global_shard_task_list()."""
+
+    def _make_job(self, shard_size=None):
+        if shard_size is None:
+            shard_size = [512, 512, 512]
+        settings = ImarisJobSettings(
+            input_source="/fake/input",
+            output_directory="/fake/output",
+            num_of_partitions=4,
+            partition_to_process=0,
+            shard_size=shard_size,
+        )
+        return ImarisCompressionJob(job_settings=settings)
+
+    @patch("aind_exaspim_data_transformation.imaris_job.ImarisReader")
+    def test_uses_metadata_shape_not_hdf5_shape(self, mock_reader_cls):
+        """Shard enumeration must use get_metadata_shape(), not get_shape()."""
+        mock_reader = MagicMock()
+        mock_reader_cls.return_value.__enter__.return_value = mock_reader
+        # Simulate padding: HDF5 shape is larger than true image shape
+        mock_reader.get_metadata_shape.return_value = (512, 512, 512)
+        mock_reader.get_shape.return_value = (576, 576, 576)  # padded
+
+        job = self._make_job(shard_size=[512, 512, 512])
+        tasks = job._build_global_shard_task_list([Path("/fake/tile.ims")])
+
+        # Exactly 1 shard for a 512-cube at 512 shard size
+        self.assertEqual(len(tasks), 1)
+        self.assertEqual(tasks[0][1], (0, 0, 0))
+        # get_metadata_shape called; get_shape must NOT be called for shape
+        mock_reader.get_metadata_shape.assert_called_once()
+        mock_reader.get_shape.assert_not_called()
+
+    @patch("aind_exaspim_data_transformation.imaris_job.ImarisReader")
+    def test_shard_count_from_metadata_shape(self, mock_reader_cls):
+        """2x2x2 = 8 shards when metadata shape is exactly 2x shard size."""
+        mock_reader = MagicMock()
+        mock_reader_cls.return_value.__enter__.return_value = mock_reader
+        mock_reader.get_metadata_shape.return_value = (1024, 1024, 1024)
+        mock_reader.get_shape.return_value = (1088, 1088, 1088)  # padded
+
+        job = self._make_job(shard_size=[512, 512, 512])
+        tasks = job._build_global_shard_task_list([Path("/fake/tile.ims")])
+
+        self.assertEqual(len(tasks), 8)
+
+    @patch("aind_exaspim_data_transformation.imaris_job.ImarisReader")
+    def test_multiple_stacks_summed(self, mock_reader_cls):
+        """Tasks from multiple stacks are concatenated correctly."""
+        mock_reader = MagicMock()
+        mock_reader_cls.return_value.__enter__.return_value = mock_reader
+        mock_reader.get_metadata_shape.return_value = (512, 512, 512)
+
+        job = self._make_job(shard_size=[512, 512, 512])
+        stacks = [Path("/fake/tile_a.ims"), Path("/fake/tile_b.ims")]
+        tasks = job._build_global_shard_task_list(stacks)
+
+        self.assertEqual(len(tasks), 2)
+        self.assertEqual(tasks[0][0], stacks[0])
+        self.assertEqual(tasks[1][0], stacks[1])
+
+    @patch("aind_exaspim_data_transformation.imaris_job.ImarisReader")
+    def test_padded_shape_would_give_wrong_count(self, mock_reader_cls):
+        """Confirm the old bug: padded get_shape() would over-count shards."""
+        mock_reader = MagicMock()
+        mock_reader_cls.return_value.__enter__.return_value = mock_reader
+        # True image fits in 1 shard; padded HDF5 shape would spill into 8
+        mock_reader.get_metadata_shape.return_value = (512, 512, 512)
+        mock_reader.get_shape.return_value = (576, 576, 576)  # would give 8
+
+        job = self._make_job(shard_size=[512, 512, 512])
+        tasks = job._build_global_shard_task_list([Path("/fake/tile.ims")])
+
+        # Should get 1 shard (from metadata shape), not 8 (from padded shape)
+        self.assertEqual(len(tasks), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
