@@ -542,8 +542,11 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
 
         for stack_path in stack_paths:
             with ImarisReader(str(stack_path)) as reader:
+                # Use the authoritative metadata shape (no HDF5 chunk-alignment
+                # padding) so shard enumeration is consistent with the zarr
+                # store shape declared in imaris_to_zarr_distributed().
                 data_shape = cast(
-                    Tuple[int, int, int], tuple(reader.get_shape())
+                    Tuple[int, int, int], reader.get_metadata_shape()
                 )
             for shard_idx in enumerate_shard_indices(data_shape, shard_shape):
                 tasks.append((stack_path, shard_idx))
