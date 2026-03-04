@@ -29,7 +29,7 @@ from aind_data_transfer_service.models.core import (
 
 # ── Configurable defaults ──────────────────────────────────────────
 IMAGE = "ghcr.io/allenneuraldynamics/aind-exaspim-data-transformation"
-IMAGE_VERSION = "dev-2bd972f"
+IMAGE_VERSION = "dev-e057957"
 ENDPOINT = "http://aind-data-transfer-service-dev"
 S3_BUCKET = "open"  # maps to aind-open-data-dev
 JOB_TYPE = "default"  # registered job type on the dev cluster
@@ -78,6 +78,7 @@ def _estimate_resources(
     )  # from profiling, seems to need at least this much per CPU regardless of tile size
 
     memory_per_cpu = min(
+        
         max(estimated_mem, MIN_RAM_MB // CPUS_PER_NODE),
         MAX_RAM_MB // CPUS_PER_NODE,
     )
@@ -246,7 +247,7 @@ def test_submit_exaspim_job():
         source=data_dir,
         project_name="MSMA Platform",
         subject_id="785688",
-        single_tile_upload=True,  # Set to True for testing with a single tile
+        single_tile_upload=False,  # Set to True for testing with a single tile
     )
 
 
