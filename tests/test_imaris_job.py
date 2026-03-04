@@ -896,6 +896,147 @@ class TestImarisCompressionJob(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         mock_upload.assert_not_called()  # Not called for partition 1
 
+    @patch("aind_exaspim_data_transformation.imaris_job.Path")
+    def test_single_tile_upload_sorted_paths(self, mock_path_cls):
+        """Test single_tile_upload filters to first tile in sorted mode"""
+        settings = ImarisJobSettings(
+            input_source="/fake/input",
+            output_directory="/fake/output",
+            num_of_partitions=4,
+            partition_to_process=0,
+            single_tile_upload=True,
+        )
+        job = ImarisCompressionJob(job_settings=settings)
+
+        # Mock Path objects for multiple files
+        mock_file1 = MagicMock(spec=Path)
+        mock_file1.is_file.return_value = True
+        mock_file1.name = "tile_001.ims"
+        mock_file1.__str__ = lambda x: "/fake/input/tile_001.ims"
+
+        mock_file2 = MagicMock(spec=Path)
+        mock_file2.is_file.return_value = True
+        mock_file2.name = "tile_002.ims"
+        mock_file2.__str__ = lambda x: "/fake/input/tile_002.ims"
+
+        mock_file3 = MagicMock(spec=Path)
+        mock_file3.is_file.return_value = True
+        mock_file3.name = "tile_003.ims"
+        mock_file3.__str__ = lambda x: "/fake/input/tile_003.ims"
+
+        # Mock the Path constructor and glob
+        mock_path_instance = MagicMock()
+        mock_path_instance.glob.return_value = [
+            mock_file3,
+            mock_file1,
+            mock_file2,
+        ]
+        mock_path_cls.return_value = mock_path_instance
+
+        # Get sorted stack paths
+        result = job._get_sorted_stack_paths()
+
+        # Should only return first file after sorting
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].name, "tile_001.ims")
+
+    @patch("aind_exaspim_data_transformation.imaris_job.Path")
+    def test_single_tile_upload_partitioned_paths(self, mock_path_cls):
+        """Test single_tile_upload filters to first tile in file partition mode"""
+        settings = ImarisJobSettings(
+            input_source="/fake/input",
+            output_directory="/fake/output",
+            num_of_partitions=4,
+            partition_to_process=0,
+            single_tile_upload=True,
+            partition_mode="file",
+        )
+        job = ImarisCompressionJob(job_settings=settings)
+
+        # Mock Path objects for multiple files
+        mock_file1 = MagicMock(spec=Path)
+        mock_file1.is_file.return_value = True
+        mock_file1.name = "tile_001.ims"
+        mock_file1.__str__ = lambda x: "/fake/input/tile_001.ims"
+
+        mock_file2 = MagicMock(spec=Path)
+        mock_file2.is_file.return_value = True
+        mock_file2.name = "tile_002.ims"
+        mock_file2.__str__ = lambda x: "/fake/input/tile_002.ims"
+
+        mock_file3 = MagicMock(spec=Path)
+        mock_file3.is_file.return_value = True
+        mock_file3.name = "tile_003.ims"
+        mock_file3.__str__ = lambda x: "/fake/input/tile_003.ims"
+
+        # Mock the Path constructor and glob
+        mock_path_instance = MagicMock()
+        mock_path_instance.glob.return_value = [
+            mock_file2,
+            mock_file3,
+            mock_file1,
+        ]
+        mock_path_cls.return_value = mock_path_instance
+
+        # Get partitioned list
+        result = job._get_partitioned_list_of_stack_paths()
+
+        # Should partition single file across all partitions
+        self.assertEqual(len(result), 4)
+        # First partition gets the file
+        self.assertEqual(len(result[0]), 1)
+        self.assertEqual(result[0][0].name, "tile_001.ims")
+        # Other partitions are empty
+        self.assertEqual(len(result[1]), 0)
+        self.assertEqual(len(result[2]), 0)
+        self.assertEqual(len(result[3]), 0)
+
+    @patch("aind_exaspim_data_transformation.imaris_job.Path")
+    def test_backward_compatibility_multi_tile(self, mock_path_cls):
+        """Test default behavior processes all tiles (backward compatibility)"""
+        settings = ImarisJobSettings(
+            input_source="/fake/input",
+            output_directory="/fake/output",
+            num_of_partitions=2,
+            partition_to_process=0,
+            # single_tile_upload not set (defaults to False)
+        )
+        job = ImarisCompressionJob(job_settings=settings)
+
+        # Mock Path objects for multiple files
+        mock_file1 = MagicMock(spec=Path)
+        mock_file1.is_file.return_value = True
+        mock_file1.name = "tile_001.ims"
+        mock_file1.__str__ = lambda x: "/fake/input/tile_001.ims"
+
+        mock_file2 = MagicMock(spec=Path)
+        mock_file2.is_file.return_value = True
+        mock_file2.name = "tile_002.ims"
+        mock_file2.__str__ = lambda x: "/fake/input/tile_002.ims"
+
+        mock_file3 = MagicMock(spec=Path)
+        mock_file3.is_file.return_value = True
+        mock_file3.name = "tile_003.ims"
+        mock_file3.__str__ = lambda x: "/fake/input/tile_003.ims"
+
+        # Mock the Path constructor and glob
+        mock_path_instance = MagicMock()
+        mock_path_instance.glob.return_value = [
+            mock_file1,
+            mock_file2,
+            mock_file3,
+        ]
+        mock_path_cls.return_value = mock_path_instance
+
+        # Get sorted stack paths
+        result = job._get_sorted_stack_paths()
+
+        # Should return all tiles (existing behavior)
+        self.assertEqual(len(result), 3)
+        self.assertEqual(result[0].name, "tile_001.ims")
+        self.assertEqual(result[1].name, "tile_002.ims")
+        self.assertEqual(result[2].name, "tile_003.ims")
+
 
 class TestJobEntrypoint(unittest.TestCase):
     """Test suite for job_entrypoint function"""
@@ -997,6 +1138,250 @@ class TestJobEntrypoint(unittest.TestCase):
 
         # Settings created from env vars (no arguments)
         mock_settings_cls.assert_called_once_with()
+
+
+class TestGetTileTranslationFromAcquisition(unittest.TestCase):
+    """Tests for ImarisCompressionJob._get_tile_translation_from_acquisition."""
+
+    # Minimal acquisition.json payload covering schema v1.x
+    _ACQ_CONFIG = {
+        "schema_version": "1.0.4",
+        "tiles": [
+            {
+                "file_name": "tile_000000_ch_561.ims",
+                "coordinate_transformations": [
+                    {
+                        "type": "scale",
+                        "scale": ["0.748", "0.748", "1.0"],
+                    },
+                    {
+                        "type": "translation",
+                        # X=30.1108472 mm, Y=18.082368 mm, Z=7.1663 mm
+                        "translation": [
+                            "30.1108472",
+                            "18.082368",
+                            "7.1663",
+                        ],
+                    },
+                ],
+            },
+            {
+                "file_name": "tile_000000_ch_488.ims",
+                "coordinate_transformations": [
+                    {
+                        "type": "scale",
+                        "scale": ["0.748", "0.748", "1.0"],
+                    },
+                    {
+                        "type": "translation",
+                        "translation": ["10.0", "20.0", "5.0"],
+                    },
+                ],
+            },
+            {
+                # Tile with no translation transform (scale only)
+                "file_name": "tile_no_translation.ims",
+                "coordinate_transformations": [
+                    {"type": "scale", "scale": ["0.748", "0.748", "1.0"]}
+                ],
+            },
+        ],
+    }
+
+    def _make_acq_path(self, tmp_path, config=None):
+        """Write config to a temporary acquisition.json and return its Path."""
+        import json
+        import tempfile
+
+        acq_file = Path(tmp_path) / "acquisition.json"
+        with open(acq_file, "w") as f:
+            json.dump(config or self._ACQ_CONFIG, f)
+        return acq_file
+
+    @patch(
+        "aind_exaspim_data_transformation.imaris_job.utils.read_json_as_dict"
+    )
+    def test_returns_zyx_micrometers(self, mock_read):
+        """Translation is converted from mm XYZ → µm ZYX."""
+        mock_path = MagicMock()
+        mock_path.is_file.return_value = True
+        mock_read.return_value = self._ACQ_CONFIG
+
+        result = ImarisCompressionJob._get_tile_translation_from_acquisition(
+            mock_path, "tile_000000_ch_561.ims"
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(len(result), 3)
+        # Z = 7.1663 mm * 1000 = 7166.3 µm
+        self.assertAlmostEqual(result[0], 7166.3, places=3)
+        # Y = 18.082368 mm * 1000 = 18082.368 µm
+        self.assertAlmostEqual(result[1], 18082.368, places=3)
+        # X = 30.1108472 mm * 1000 = 30110.8472 µm
+        self.assertAlmostEqual(result[2], 30110.8472, places=3)
+
+    @patch(
+        "aind_exaspim_data_transformation.imaris_job.utils.read_json_as_dict"
+    )
+    def test_second_tile_independent_lookup(self, mock_read):
+        """Different tiles return their own translation values."""
+        mock_path = MagicMock()
+        mock_path.is_file.return_value = True
+        mock_read.return_value = self._ACQ_CONFIG
+
+        result = ImarisCompressionJob._get_tile_translation_from_acquisition(
+            mock_path, "tile_000000_ch_488.ims"
+        )
+
+        self.assertIsNotNone(result)
+        # Z = 5.0 mm * 1000, Y = 20.0 mm * 1000, X = 10.0 mm * 1000
+        self.assertAlmostEqual(result[0], 5000.0, places=3)
+        self.assertAlmostEqual(result[1], 20000.0, places=3)
+        self.assertAlmostEqual(result[2], 10000.0, places=3)
+
+    @patch(
+        "aind_exaspim_data_transformation.imaris_job.utils.read_json_as_dict"
+    )
+    def test_returns_none_for_missing_tile(self, mock_read):
+        """Returns None when the tile filename is not in the manifest."""
+        mock_path = MagicMock()
+        mock_path.is_file.return_value = True
+        mock_read.return_value = self._ACQ_CONFIG
+
+        result = ImarisCompressionJob._get_tile_translation_from_acquisition(
+            mock_path, "tile_999999_ch_561.ims"
+        )
+        self.assertIsNone(result)
+
+    @patch(
+        "aind_exaspim_data_transformation.imaris_job.utils.read_json_as_dict"
+    )
+    def test_returns_none_when_tile_has_no_translation(self, mock_read):
+        """Returns None when the matching tile has no translation transform."""
+        mock_path = MagicMock()
+        mock_path.is_file.return_value = True
+        mock_read.return_value = self._ACQ_CONFIG
+
+        result = ImarisCompressionJob._get_tile_translation_from_acquisition(
+            mock_path, "tile_no_translation.ims"
+        )
+        self.assertIsNone(result)
+
+    def test_returns_none_when_acquisition_file_absent(self):
+        """Returns None when acquisition.json does not exist on disk."""
+        missing_path = MagicMock()
+        missing_path.is_file.return_value = False
+
+        result = ImarisCompressionJob._get_tile_translation_from_acquisition(
+            missing_path, "tile_000000_ch_561.ims"
+        )
+        self.assertIsNone(result)
+
+    @patch(
+        "aind_exaspim_data_transformation.imaris_job.utils.read_json_as_dict"
+    )
+    def test_returns_none_on_parse_error(self, mock_read):
+        """Returns None (with a warning) when the JSON cannot be parsed."""
+        mock_path = MagicMock()
+        mock_path.is_file.return_value = True
+        mock_read.side_effect = ValueError("bad json")
+
+        result = ImarisCompressionJob._get_tile_translation_from_acquisition(
+            mock_path, "tile_000000_ch_561.ims"
+        )
+        self.assertIsNone(result)
+
+    @patch(
+        "aind_exaspim_data_transformation.imaris_job.utils.read_json_as_dict"
+    )
+    def test_returns_none_for_empty_tiles_list(self, mock_read):
+        """Returns None when the tiles array is empty."""
+        mock_path = MagicMock()
+        mock_path.is_file.return_value = True
+        mock_read.return_value = {"schema_version": "1.0.4", "tiles": []}
+
+        result = ImarisCompressionJob._get_tile_translation_from_acquisition(
+            mock_path, "tile_000000_ch_561.ims"
+        )
+        self.assertIsNone(result)
+
+
+class TestBuildGlobalShardTaskList(unittest.TestCase):
+    """Tests for _build_global_shard_task_list()."""
+
+    def _make_job(self, shard_size=None):
+        if shard_size is None:
+            shard_size = [512, 512, 512]
+        settings = ImarisJobSettings(
+            input_source="/fake/input",
+            output_directory="/fake/output",
+            num_of_partitions=4,
+            partition_to_process=0,
+            shard_size=shard_size,
+        )
+        return ImarisCompressionJob(job_settings=settings)
+
+    @patch("aind_exaspim_data_transformation.imaris_job.ImarisReader")
+    def test_uses_metadata_shape_not_hdf5_shape(self, mock_reader_cls):
+        """Shard enumeration must use get_metadata_shape(), not get_shape()."""
+        mock_reader = MagicMock()
+        mock_reader_cls.return_value.__enter__.return_value = mock_reader
+        # Simulate padding: HDF5 shape is larger than true image shape
+        mock_reader.get_metadata_shape.return_value = (512, 512, 512)
+        mock_reader.get_shape.return_value = (576, 576, 576)  # padded
+
+        job = self._make_job(shard_size=[512, 512, 512])
+        tasks = job._build_global_shard_task_list([Path("/fake/tile.ims")])
+
+        # Exactly 1 shard for a 512-cube at 512 shard size
+        self.assertEqual(len(tasks), 1)
+        self.assertEqual(tasks[0][1], (0, 0, 0))
+        # get_metadata_shape called; get_shape must NOT be called for shape
+        mock_reader.get_metadata_shape.assert_called_once()
+        mock_reader.get_shape.assert_not_called()
+
+    @patch("aind_exaspim_data_transformation.imaris_job.ImarisReader")
+    def test_shard_count_from_metadata_shape(self, mock_reader_cls):
+        """2x2x2 = 8 shards when metadata shape is exactly 2x shard size."""
+        mock_reader = MagicMock()
+        mock_reader_cls.return_value.__enter__.return_value = mock_reader
+        mock_reader.get_metadata_shape.return_value = (1024, 1024, 1024)
+        mock_reader.get_shape.return_value = (1088, 1088, 1088)  # padded
+
+        job = self._make_job(shard_size=[512, 512, 512])
+        tasks = job._build_global_shard_task_list([Path("/fake/tile.ims")])
+
+        self.assertEqual(len(tasks), 8)
+
+    @patch("aind_exaspim_data_transformation.imaris_job.ImarisReader")
+    def test_multiple_stacks_summed(self, mock_reader_cls):
+        """Tasks from multiple stacks are concatenated correctly."""
+        mock_reader = MagicMock()
+        mock_reader_cls.return_value.__enter__.return_value = mock_reader
+        mock_reader.get_metadata_shape.return_value = (512, 512, 512)
+
+        job = self._make_job(shard_size=[512, 512, 512])
+        stacks = [Path("/fake/tile_a.ims"), Path("/fake/tile_b.ims")]
+        tasks = job._build_global_shard_task_list(stacks)
+
+        self.assertEqual(len(tasks), 2)
+        self.assertEqual(tasks[0][0], stacks[0])
+        self.assertEqual(tasks[1][0], stacks[1])
+
+    @patch("aind_exaspim_data_transformation.imaris_job.ImarisReader")
+    def test_padded_shape_would_give_wrong_count(self, mock_reader_cls):
+        """Confirm the old bug: padded get_shape() would over-count shards."""
+        mock_reader = MagicMock()
+        mock_reader_cls.return_value.__enter__.return_value = mock_reader
+        # True image fits in 1 shard; padded HDF5 shape would spill into 8
+        mock_reader.get_metadata_shape.return_value = (512, 512, 512)
+        mock_reader.get_shape.return_value = (576, 576, 576)  # would give 8
+
+        job = self._make_job(shard_size=[512, 512, 512])
+        tasks = job._build_global_shard_task_list([Path("/fake/tile.ims")])
+
+        # Should get 1 shard (from metadata shape), not 8 (from padded shape)
+        self.assertEqual(len(tasks), 1)
 
 
 if __name__ == "__main__":

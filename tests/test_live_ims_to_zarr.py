@@ -22,6 +22,9 @@ from aind_exaspim_data_transformation.compress.imaris_to_zarr import (
 )
 from aind_exaspim_data_transformation.utils.io_utils import ImarisReader
 
+# Limit distributed local test to two shards so it runs in seconds, not hours
+test_shard_indices = [(0, 0, 0), (0, 0, 1)]
+
 
 class ResourceMonitor:
     """Monitor CPU and memory usage during test execution."""
@@ -168,7 +171,7 @@ def timed_operation(
         stats["elapsed_seconds"] = elapsed
 
 
-@unittest.skip("S3 write test - run manually when needed")
+@unittest.skip("Live integration tests — require real IMS data, run manually")
 class TestLiveImsToZarr(unittest.TestCase):
     """Live tests using real IMS files from staging area"""
 
@@ -286,7 +289,7 @@ class TestLiveImsToZarr(unittest.TestCase):
 
             print("✓ All properties read successfully")
 
-    @unittest.skip("S3 write test - run manually when needed")
+    # @unittest.skip("S3 write test - run manually when needed")
     def test_imaris_reader_chunking_strategy(self):
         """Report Imaris chunking strategy and per-dimension chunk counts"""
         if not self.ims_files:
@@ -396,7 +399,7 @@ class TestLiveImsToZarr(unittest.TestCase):
 
             print("\n✓ Pyramid generated successfully")
 
-    @unittest.skip("S3 write test - run manually when needed")
+    @unittest.skip("Full-tile write benchmark — run manually when needed")
     def test_imaris_to_zarr_writer_single_file(self):
         """Test full conversion pipeline: IMS -> Zarr with single file"""
         if not self.ims_files:
@@ -474,7 +477,7 @@ class TestLiveImsToZarr(unittest.TestCase):
             output_size = result.stdout.strip().split()[0]
             print(f"  Output size: {output_size}")
 
-    print("\n✓ Conversion completed successfully")
+        print("\n✓ Conversion completed successfully")
 
     @unittest.skip("S3 write test - run manually when needed")
     def test_imaris_to_zarr_writer_custom_voxel_size(self):
@@ -561,6 +564,13 @@ class TestLiveImsToZarr(unittest.TestCase):
         """Test TensorStore parallel writer with S3 output"""
         if not self.ims_files:
             self.skipTest("No IMS files found in data directory")
+
+        # These tests write to S3 and require explicit opt-in.
+        # Run with: RUN_S3_WRITE_TESTS=1 pytest tests/test_live_ims_to_zarr.py
+        if not os.environ.get("RUN_S3_WRITE_TESTS"):
+            self.skipTest(
+                "S3 write tests disabled — set RUN_S3_WRITE_TESTS=1 to enable"
+            )
 
         ims_file = self.ims_files[0]
 
@@ -651,6 +661,13 @@ class TestLiveImsToZarr(unittest.TestCase):
         if not self.ims_files:
             self.skipTest("No IMS files found in data directory")
 
+        # These tests write to S3 and require explicit opt-in.
+        # Run with: RUN_S3_WRITE_TESTS=1 pytest tests/test_live_ims_to_zarr.py
+        if not os.environ.get("RUN_S3_WRITE_TESTS"):
+            self.skipTest(
+                "S3 write tests disabled — set RUN_S3_WRITE_TESTS=1 to enable"
+            )
+
         ims_file = self.ims_files[0]
 
         # S3 test configuration
@@ -734,7 +751,6 @@ class TestLiveImsToZarr(unittest.TestCase):
 
         print("\n✓ Multi-level S3 upload completed successfully")
 
-    @unittest.skip("Distributed test - run manually when needed")
     def test_imaris_to_zarr_distributed_local(self):
         """Test distributed worker-centric conversion to local filesystem"""
         if not self.ims_files:
@@ -753,29 +769,33 @@ class TestLiveImsToZarr(unittest.TestCase):
         chunk_shape = (128, 128, 128)
         shard_shape = (256, 256, 256)  # ~32MB per shard for uint16
         n_lvls = 3
+        stack_name = f"{ims_file.stem}.ome.zarr"
 
         print(f"  Chunk shape: {chunk_shape}")
         print(f"  Shard shape: {shard_shape}")
         print(f"  Pyramid levels: {n_lvls}")
         print(f"  translate_pyramid_levels: True")
 
-        # Get shard info before conversion
+        # Use metadata shape (no HDF5 padding) — this is what the zarr store
+        # will be created with, and must match the shard enumeration.
         with ImarisReader(str(ims_file)) as reader:
-            shape = reader.get_shape()
-            print(f"  Data shape: {shape}")
+            metadata_shape = reader.get_metadata_shape()
+            hdf5_shape = reader.get_shape()
+            print(f"  Metadata shape (true): {metadata_shape}")
+            print(f"  HDF5 shape (padded):   {hdf5_shape}")
 
-        # Calculate expected shards
+        # Calculate expected shards from the true (unpadded) shape
         import math
 
         shard_grid = tuple(
-            math.ceil(s / sh) for s, sh in zip(shape, shard_shape)
+            math.ceil(s / sh) for s, sh in zip(metadata_shape, shard_shape)
         )
         total_shards = shard_grid[0] * shard_grid[1] * shard_grid[2]
         print(f"  Shard grid: {shard_grid} = {total_shards} total shards")
 
         # Run conversion WITHOUT Dask client (sequential for testing)
         with timed_operation(
-            f"Distributed IMS to Zarr - sequential ({ims_file.name})",
+            f"Distributed IMS to Zarr - 2 shards ({ims_file.name})",
             interval=0.5,
         ) as stats:
             result_path = imaris_to_zarr_distributed(
@@ -786,29 +806,52 @@ class TestLiveImsToZarr(unittest.TestCase):
                 shard_shape=shard_shape,
                 n_lvls=n_lvls,
                 channel_name=ims_file.stem,
-                stack_name=f"{ims_file.stem}_distributed.ome.zarr",
+                stack_name=stack_name,
                 codec="zstd",
                 codec_level=3,
                 bucket_name=None,  # Local filesystem
                 dask_client=None,  # Sequential processing
                 translate_pyramid_levels=True,
+                shard_indices=test_shard_indices,
             )
 
-        # Calculate throughput
         if stats.get("elapsed_seconds", 0) > 0:
-            throughput = input_size_gb / stats["elapsed_seconds"]
-            print(f"\n  📈 Throughput: {throughput:.2f} GB/s")
+            print(f"\n  Elapsed: {stats['elapsed_seconds']:.2f}s")
             print(
                 f"  Peak memory: {stats.get('memory_mb', {}).get('max', 0):.1f} MB"
             )
 
         print(f"  Result path: {result_path}")
 
-        # Verify the output exists
-        output_path = Path(result_path)
+        # Verify the zarr store was created
+        output_zarr = self.output_dir / stack_name
         self.assertTrue(
-            output_path.exists() or result_path.startswith("s3://"),
-            f"Output path should exist: {result_path}",
+            output_zarr.exists(),
+            f"Output zarr should exist at {output_zarr}",
+        )
+
+        # Verify the zarr.json metadata declares the UNPADDED shape.
+        # This is the core assertion for the get_metadata_shape() fix:
+        # the zarr store shape must match metadata_shape, not hdf5_shape.
+        import json
+
+        zarr_json_path = output_zarr / "0" / "zarr.json"
+        self.assertTrue(
+            zarr_json_path.exists(), "zarr.json should exist at level 0"
+        )
+        with open(zarr_json_path) as f:
+            zarr_meta = json.load(f)
+
+        stored_shape = tuple(zarr_meta["shape"])
+        # zarr.json shape is [1, 1, Z, Y, X] — compare the last 3 dims
+        stored_zyx = stored_shape[-3:]
+        print(f"  zarr.json shape (ZYX): {stored_zyx}")
+        print(f"  Expected (metadata):   {metadata_shape}")
+        self.assertEqual(
+            stored_zyx,
+            metadata_shape,
+            f"zarr store shape {stored_zyx} must equal metadata_shape "
+            f"{metadata_shape}, not padded HDF5 shape {hdf5_shape}",
         )
 
         print("\n✓ Distributed conversion (sequential) completed successfully")

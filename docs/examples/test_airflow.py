@@ -29,16 +29,16 @@ from aind_data_transfer_service.models.core import (
 
 # ── Configurable defaults ──────────────────────────────────────────
 IMAGE = "ghcr.io/allenneuraldynamics/aind-exaspim-data-transformation"
-IMAGE_VERSION = "dev-18eaef6"
+IMAGE_VERSION = "dev-e057957"
 ENDPOINT = "http://aind-data-transfer-service-dev"
 S3_BUCKET = "open"  # maps to aind-open-data-dev
 JOB_TYPE = "default"  # registered job type on the dev cluster
 
 # Resource limits
-MAX_PARTITIONS = 32
+MAX_PARTITIONS = 64
 CPUS_PER_NODE = 4
 MIN_RAM_MB = 24_000
-MAX_RAM_MB = 40_000
+MAX_RAM_MB = 50_000
 SCHEDULING_OVERHEAD_MB = 1_300  # per tile, from profiling
 PROCESSING_OVERHEAD_MB = 4_400  # per shard, from profiling
 BUFFER_MB = 1_000
@@ -66,7 +66,7 @@ def _estimate_resources(
     # num_partitions = min(n_tiles, MAX_PARTITIONS)
     # tiles_per_partition = max(n_tiles // num_partitions, 1)
     # we want to run multiple partitions per file
-    num_partitions = 32
+    num_partitions = MAX_PARTITIONS
 
     # estimated_mem = (
     #     tiles_per_partition * SCHEDULING_OVERHEAD_MB
@@ -82,9 +82,7 @@ def _estimate_resources(
         MAX_RAM_MB // CPUS_PER_NODE,
     )
 
-    timeout_min = int(
-        (n_tiles * tile_size_mb / 1024) / PROCESSING_SPEED_MB_PER_HOUR + 60
-    )
+    timeout_min = int(24 * 60)
 
     return num_partitions, memory_per_cpu, timeout_min
 
@@ -120,6 +118,7 @@ def submit_exaspim_job(
     source: str,
     project_name: str = "MSMA Platform",
     subject_id: str | None = None,
+    single_tile_upload: bool = False,
 ) -> None:
     """Build and POST an ExaSPIM transformation job.
 
@@ -131,6 +130,9 @@ def submit_exaspim_job(
         Project name for the upload job.
     subject_id : str | None
         Subject ID. Derived from *source* folder name when ``None``.
+    single_tile_upload : bool
+        If True, only process the first tile for integration testing.
+        Default is False (process all tiles).
     """
     if subject_id is None:
         subject_id = _derive_subject_id(source)
@@ -148,6 +150,8 @@ def submit_exaspim_job(
     print(f"Partitions        : {num_partitions}")
     print(f"Memory / CPU      : {mem_mb:,} MB")
     print(f"Timeout           : {timeout_min} min")
+    if single_tile_upload:
+        print(f"Single tile mode  : ENABLED (testing first tile only)")
 
     exaspim_job_settings = {
         "input_source": source,
@@ -158,6 +162,7 @@ def submit_exaspim_job(
         "translate_imaris_pyramid": True,
         "partition_mode": "shard",
         "dask_workers": CPUS_PER_NODE,  # use all CPUs for distributed processing
+        "single_tile_upload": single_tile_upload,
     }
 
     custom_exaspim_task = Task(
@@ -213,6 +218,7 @@ def submit_exaspim_job(
             "register_data_asset": {"skip_task": True},
             "get_codeocean_asset_id": {"skip_task": True},
             "run_codeocean_pipeline": {"skip_task": True},
+            "remove_source_folders": {"skip_task": True},
         },
     )
 
@@ -229,15 +235,15 @@ def submit_exaspim_job(
 
 
 def test_submit_exaspim_job():
-    data_dir = (
-        "/allen/aind/stage/exaSPIM/"
-        "exaSPIM_683791-screen_2026-01-26_14-53-41/exaSPIM"
-    )
+    # dataset_name = "exaSPIM_718162_2026-01-29_19-28-50"
+    dataset_name = "exaSPIM_785688_2026-02-19_08-34-14"
+    data_dir = f"/allen/aind/stage/exaSPIM/" f"{dataset_name}/exaSPIM"
 
     submit_exaspim_job(
         source=data_dir,
         project_name="MSMA Platform",
-        subject_id="683791-screen",
+        subject_id="785688",
+        single_tile_upload=False,  # Set to True for testing with a single tile
     )
 
 
@@ -266,12 +272,18 @@ def main():
         default=None,
         help="Subject ID. Derived from folder name if omitted.",
     )
+    parser.add_argument(
+        "--single-tile",
+        action="store_true",
+        help="Process only the first tile (for integration testing).",
+    )
     args = parser.parse_args()
 
     submit_exaspim_job(
         source=args.input_folder,
         project_name=args.project_name,
         subject_id=args.subject_id,
+        single_tile_upload=args.single_tile,
     )
 
 

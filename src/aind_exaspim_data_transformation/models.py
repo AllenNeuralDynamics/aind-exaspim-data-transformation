@@ -127,3 +127,17 @@ class ImarisJobSettings(BasicJobSettings):
         ),
         title="Partition Mode",
     )
+
+    single_tile_upload: bool = Field(
+        default=False,
+        description=(
+            "If True, process only the first tile/file from the dataset. "
+            "The selected tile will still be distributed across workers "
+            "using the configured partitioning strategy (shard or file mode). "
+            "Useful for integration testing and performance validation of "
+            "very large datasets (e.g., 6TB tiles) without processing the "
+            "entire dataset (e.g., 120TB). The first tile is selected after "
+            "deterministic sorting to ensure all workers select the same file."
+        ),
+        title="Single Tile Upload Mode",
+    )
