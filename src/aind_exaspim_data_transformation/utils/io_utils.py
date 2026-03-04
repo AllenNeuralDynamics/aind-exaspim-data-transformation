@@ -510,9 +510,11 @@ class ImarisReader:
         for lvl in range(1, level + 1):
             next_hdf5: Tuple[int, ...] = self.get_shape(_lvl_data_path(lvl))
             factors = tuple(
-                round(current_hdf5[i] / next_hdf5[i])
-                if next_hdf5[i] > 0
-                else 1
+                (
+                    round(current_hdf5[i] / next_hdf5[i])
+                    if next_hdf5[i] > 0
+                    else 1
+                )
                 for i in range(3)
             )
             current_true = tuple(

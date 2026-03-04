@@ -78,7 +78,6 @@ def _estimate_resources(
     )  # from profiling, seems to need at least this much per CPU regardless of tile size
 
     memory_per_cpu = min(
-        
         max(estimated_mem, MIN_RAM_MB // CPUS_PER_NODE),
         MAX_RAM_MB // CPUS_PER_NODE,
     )
@@ -238,10 +237,7 @@ def submit_exaspim_job(
 def test_submit_exaspim_job():
     # dataset_name = "exaSPIM_718162_2026-01-29_19-28-50"
     dataset_name = "exaSPIM_785688_2026-02-19_08-34-14"
-    data_dir = (
-        f"/allen/aind/stage/exaSPIM/"
-        f"{dataset_name}/exaSPIM"
-    )
+    data_dir = f"/allen/aind/stage/exaSPIM/" f"{dataset_name}/exaSPIM"
 
     submit_exaspim_job(
         source=data_dir,
