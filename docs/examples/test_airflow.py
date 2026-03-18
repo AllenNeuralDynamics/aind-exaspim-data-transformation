@@ -36,7 +36,7 @@ IMAGE = "ghcr.io/allenneuraldynamics/aind-exaspim-data-transformation"
 IMAGE_VERSION = "dev-e057957"
 ENDPOINT = "http://aind-data-transfer-service-dev"
 S3_BUCKET = "open"  # maps to aind-open-data-dev
-S3_BUCKET_PREFIX = "aind-open-data-dev"  # actual S3 bucket name for dev
+S3_BUCKET_PREFIX = "aind-open-data-dev-u5u0i5"  # actual S3 bucket name for dev
 JOB_TYPE = "default"  # registered job type on the dev cluster
 
 # Resource limits
@@ -270,13 +270,13 @@ def submit_exaspim_job(
 
 def test_submit_exaspim_job():
     # dataset_name = "exaSPIM_718162_2026-01-29_19-28-50"
-    dataset_name = "exaSPIM_785688_2026-02-19_08-34-14"
-    data_dir = f"/allen/aind/stage/exaSPIM/" f"{dataset_name}/exaSPIM"
+    dataset_name = "exaSPIM_819682-screen_2026-03-11_14-42-37"
+    data_dir = f"/allen/aind/stage/exaSPIM/{dataset_name}/exaSPIM"
 
     submit_exaspim_job(
         source=data_dir,
         project_name="MSMA Platform",
-        subject_id="785688",
+        subject_id="819682-screen",
         single_tile_upload=False,  # Set to True for testing with a single tile
         run_metadata_upgrade=True,  # Upgrade v1 metadata files to v2.5+
     )
