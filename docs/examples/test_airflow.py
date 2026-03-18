@@ -24,14 +24,19 @@ from aind_data_transfer_service.models.core import (
     UploadJobConfigsV2,
 )
 
+from aind_exaspim_data_transformation.upgrade_metadata import (
+    upgrade_metadata,
+)
+
 # from aind_data_schema_models.platforms import Platform
 
 
 # ── Configurable defaults ──────────────────────────────────────────
 IMAGE = "ghcr.io/allenneuraldynamics/aind-exaspim-data-transformation"
-IMAGE_VERSION = "dev-2bd972f"
+IMAGE_VERSION = "dev-e057957"
 ENDPOINT = "http://aind-data-transfer-service-dev"
 S3_BUCKET = "open"  # maps to aind-open-data-dev
+S3_BUCKET_PREFIX = "aind-open-data-dev-u5u0i5"  # actual S3 bucket name for dev
 JOB_TYPE = "default"  # registered job type on the dev cluster
 
 # Resource limits
@@ -114,11 +119,21 @@ def _derive_subject_id(path: str) -> str:
     return basename
 
 
+def _derive_dataset_name(source: str) -> str:
+    """Derive the dataset name from the source directory path.
+
+    Expects a path like ``/allen/aind/stage/exaSPIM/<dataset>/exaSPIM``.
+    Returns the ``<dataset>`` component.
+    """
+    return os.path.basename(os.path.dirname(os.path.normpath(source)))
+
+
 def submit_exaspim_job(
     source: str,
     project_name: str = "MSMA Platform",
     subject_id: str | None = None,
     single_tile_upload: bool = False,
+    run_metadata_upgrade: bool = True,
 ) -> None:
     """Build and POST an ExaSPIM transformation job.
 
@@ -133,9 +148,28 @@ def submit_exaspim_job(
     single_tile_upload : bool
         If True, only process the first tile for integration testing.
         Default is False (process all tiles).
+    run_metadata_upgrade : bool
+        If True (default), upgrade v1 metadata files to v2.5+ and
+        upload them to S3 before submitting the transformation job.
     """
     if subject_id is None:
         subject_id = _derive_subject_id(source)
+
+    # ── Upgrade v1 metadata → v2.5+ and upload to S3 ───────────────
+    if run_metadata_upgrade:
+        dataset_name = _derive_dataset_name(source)
+        s3_location = f"s3://{S3_BUCKET_PREFIX}/{dataset_name}"
+        print(f"Upgrading metadata for {dataset_name} → {s3_location}")
+        try:
+            upgrade_metadata(
+                source_dir=source,
+                s3_location=s3_location,
+            )
+            print("Metadata upgrade complete.")
+        except Exception as exc:
+            print(f"WARNING: Metadata upgrade failed: {exc}")
+            print("Continuing with job submission…")
+    # ────────────────────────────────────────────────────────────────
 
     acq_datetime = _parse_acq_datetime(source)
     ims_files = _discover_ims_files(source)
@@ -236,17 +270,15 @@ def submit_exaspim_job(
 
 def test_submit_exaspim_job():
     # dataset_name = "exaSPIM_718162_2026-01-29_19-28-50"
-    dataset_name = "exaSPIM_785688_2026-02-19_08-34-14"
-    data_dir = (
-        f"/allen/aind/stage/exaSPIM/"
-        f"{dataset_name}/exaSPIM"
-    )
+    dataset_name = "exaSPIM_819682-screen_2026-03-11_14-42-37"
+    data_dir = f"/allen/aind/stage/exaSPIM/{dataset_name}/exaSPIM"
 
     submit_exaspim_job(
         source=data_dir,
         project_name="MSMA Platform",
-        subject_id="785688",
-        single_tile_upload=True,  # Set to True for testing with a single tile
+        subject_id="819682-screen",
+        single_tile_upload=False,  # Set to True for testing with a single tile
+        run_metadata_upgrade=True,  # Upgrade v1 metadata files to v2.5+
     )
 
 
@@ -280,6 +312,11 @@ def main():
         action="store_true",
         help="Process only the first tile (for integration testing).",
     )
+    parser.add_argument(
+        "--no-metadata-upgrade",
+        action="store_true",
+        help="Skip upgrading v1 metadata files to v2.5+.",
+    )
     args = parser.parse_args()
 
     submit_exaspim_job(
@@ -287,6 +324,7 @@ def main():
         project_name=args.project_name,
         subject_id=args.subject_id,
         single_tile_upload=args.single_tile,
+        run_metadata_upgrade=not args.no_metadata_upgrade,
     )
 
 
