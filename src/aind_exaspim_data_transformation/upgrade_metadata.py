@@ -112,11 +112,10 @@ def upgrade_metadata(source_dir: str, s3_location: str) -> None:
     acq_data = _load_metadata_file(acq_path)
 
     if acq_data is None:
-        logger.warning(
-            "No acquisition.json found at %s — nothing to upgrade.",
-            acq_path,
+        raise FileNotFoundError(
+            f"acquisition.json not found at {acq_path}. "
+            "This file is required for metadata upgrade."
         )
-        return
 
     if not _needs_upgrade(acq_data):
         logger.info(
@@ -185,9 +184,9 @@ def upgrade_metadata(source_dir: str, s3_location: str) -> None:
             upgraded_acq.get("schema_version"),
         )
     else:
-        logger.warning(
-            "Upgrader did not produce an upgraded acquisition — "
-            "skipping upload."
+        raise RuntimeError(
+            "Upgrader did not produce an upgraded acquisition.json. "
+            "Check the input data and upgrader logs above."
         )
 
     if upgraded_inst is not None:

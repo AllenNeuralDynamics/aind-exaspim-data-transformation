@@ -160,15 +160,11 @@ def submit_exaspim_job(
         dataset_name = _derive_dataset_name(source)
         s3_location = f"s3://{S3_BUCKET_PREFIX}/{dataset_name}"
         print(f"Upgrading metadata for {dataset_name} → {s3_location}")
-        try:
-            upgrade_metadata(
-                source_dir=source,
-                s3_location=s3_location,
-            )
-            print("Metadata upgrade complete.")
-        except Exception as exc:
-            print(f"WARNING: Metadata upgrade failed: {exc}")
-            print("Continuing with job submission…")
+        upgrade_metadata(
+            source_dir=source,
+            s3_location=s3_location,
+        )
+        print("Metadata upgrade complete.")
     # ────────────────────────────────────────────────────────────────
 
     acq_datetime = _parse_acq_datetime(source)

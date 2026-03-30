@@ -116,18 +116,16 @@ class TestUpgradeMetadata(unittest.TestCase):
 
         return str(source_dir)
 
-    def test_skips_when_no_acquisition(self):
-        """Should log warning and return early when acquisition.json is
+    def test_raises_when_no_acquisition(self):
+        """Should raise FileNotFoundError when acquisition.json is
         missing."""
         with tempfile.TemporaryDirectory() as tmpdir:
             source_dir = self._make_source_dir(tmpdir)
 
-            with patch(
-                "aind_exaspim_data_transformation.upgrade_metadata"
-                ".utils.copy_file_to_s3"
-            ) as mock_cp:
+            with self.assertRaises(FileNotFoundError) as ctx:
                 upgrade_metadata(source_dir, "s3://bucket/dataset")
-                mock_cp.assert_not_called()
+
+            self.assertIn("acquisition.json", str(ctx.exception))
 
     def test_skips_when_already_v2(self):
         """Should skip silently when acquisition is already v2+."""
