@@ -836,7 +836,9 @@ class TestLiveImsToZarr(unittest.TestCase):
         import json
 
         zarr_json_path = output_zarr / "0" / "zarr.json"
-        self.assertTrue(zarr_json_path.exists(), "zarr.json should exist at level 0")
+        self.assertTrue(
+            zarr_json_path.exists(), "zarr.json should exist at level 0"
+        )
         with open(zarr_json_path) as f:
             zarr_meta = json.load(f)
 

@@ -1,0 +1,137 @@
+{
+   "describedBy": "https://raw.githubusercontent.com/AllenNeuralDynamics/aind-data-schema/main/src/aind_data_schema/core/acquisition.py",
+   "schema_version": "1.0.4",
+   "protocol_id": [],
+   "experimenter_full_name": [
+      "adam glaser"
+   ],
+   "specimen_id": "819682-screen",
+   "subject_id": "819682-screen",
+   "instrument_id": "",
+   "calibrations": [],
+   "maintenance": [],
+   "session_start_time": "2026-03-11T14:42:37.204462-07:00",
+   "session_end_time": "2026-03-11T14:59:38.243638-07:00",
+   "session_type": null,
+   "tiles": [
+      {
+         "coordinate_transformations": [
+            {
+               "type": "scale",
+               "scale": [
+                  "15.04",
+                  "15.04",
+                  "20.0"
+               ]
+            },
+            {
+               "type": "translation",
+               "translation": [
+                  "-55.4196",
+                  "7.605",
+                  "-24.6392"
+               ]
+            }
+         ],
+         "file_name": "right_000000_ch_488.ims",
+         "channel": {
+            "channel_name": "488",
+            "light_source_name": "488 nm",
+            "filter_names": [],
+            "detector_name": "vnp-604mx",
+            "additional_device_names": [
+               "camera",
+               "left_right_flip_mount"
+            ],
+            "excitation_wavelength": 488,
+            "excitation_wavelength_unit": "nanometer",
+            "excitation_power": 197.0,
+            "excitation_power_unit": "milliwatt",
+            "filter_wheel_index": 0,
+            "dilation": null,
+            "dilation_unit": "pixel",
+            "description": null
+         },
+         "notes": null,
+         "imaging_angle": 0,
+         "imaging_angle_unit": "degrees",
+         "acquisition_start_time": null,
+         "acquisition_end_time": null
+      },
+      {
+         "coordinate_transformations": [
+            {
+               "type": "scale",
+               "scale": [
+                  "15.04",
+                  "15.04",
+                  "20.0"
+               ]
+            },
+            {
+               "type": "translation",
+               "translation": [
+                  "-55.4196",
+                  "7.605",
+                  "-24.6392"
+               ]
+            }
+         ],
+         "file_name": "left_000001_ch_488.ims",
+         "channel": {
+            "channel_name": "488",
+            "light_source_name": "488 nm",
+            "filter_names": [],
+            "detector_name": "vnp-604mx",
+            "additional_device_names": [
+               "camera",
+               "left_right_flip_mount"
+            ],
+            "excitation_wavelength": 488,
+            "excitation_wavelength_unit": "nanometer",
+            "excitation_power": 197.0,
+            "excitation_power_unit": "milliwatt",
+            "filter_wheel_index": 0,
+            "dilation": null,
+            "dilation_unit": "pixel",
+            "description": null
+         },
+         "notes": null,
+         "imaging_angle": 0,
+         "imaging_angle_unit": "degrees",
+         "acquisition_start_time": null,
+         "acquisition_end_time": null
+      }
+   ],
+   "axes": [
+      {
+         "name": "X",
+         "direction": "Inferior_to_superior",
+         "dimension": 2,
+         "unit": "micrometer"
+      },
+      {
+         "name": "Y",
+         "direction": "Anterior_to_posterior",
+         "dimension": 1,
+         "unit": "micrometer"
+      },
+      {
+         "name": "Z",
+         "direction": "Left_to_right",
+         "dimension": 0,
+         "unit": "micrometer"
+      }
+   ],
+   "chamber_immersion": {
+      "medium": "other",
+      "refractive_index": "1.33"
+   },
+   "sample_immersion": null,
+   "active_objectives": null,
+   "local_storage_directory": "D:\\exaSPIM_819682-screen_2026-03-11_14-42-37",
+   "external_storage_directory": "Z:\\stage\\exaSPIM\\exaSPIM_819682-screen_2026-03-11_14-42-37",
+   "processing_steps": [],
+   "software": [],
+   "notes": null
+}
