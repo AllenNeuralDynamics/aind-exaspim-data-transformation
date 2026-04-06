@@ -85,7 +85,9 @@ def _upload_upgraded_to_s3(
         tmp.unlink(missing_ok=True)
 
 
-def upgrade_metadata(source_dir: str, s3_location: str) -> None:
+def upgrade_metadata(
+    source_dir: str, s3_location: str, dry_run: bool = False
+) -> None:
     """Upgrade v1 metadata files and upload results to S3.
 
     Parameters
@@ -100,6 +102,9 @@ def upgrade_metadata(source_dir: str, s3_location: str) -> None:
     s3_location : str
         Full S3 URI of the dataset root, e.g.
         ``s3://aind-open-data/exaSPIM_12345_2026-01-01_00-00-00``.
+    dry_run : bool
+        If True, perform the upgrade and validate results but skip all
+        S3 uploads.  Useful for local testing without write permissions.
     """
     # Lazy import — only needed when we actually upgrade
     from aind_metadata_upgrader.upgrade import Upgrade
@@ -152,33 +157,56 @@ def upgrade_metadata(source_dir: str, s3_location: str) -> None:
 
     # ── Extract upgraded dicts ──────────────────────────────────────
     upgraded_acq = None
-    if upgraded.metadata.acquisition is not None:
-        upgraded_acq = upgraded.metadata.acquisition.model_dump(
-            mode="json", exclude_none=True
+    raw_acq = upgraded.metadata.acquisition
+    if raw_acq is not None:
+        upgraded_acq = (
+            raw_acq.model_dump(mode="json", exclude_none=True)
+            if hasattr(raw_acq, "model_dump")
+            else raw_acq
         )
 
     upgraded_inst = None
-    if (
-        inst_data is not None
-        and upgraded.metadata.instrument is not None
-    ):
-        upgraded_inst = upgraded.metadata.instrument.model_dump(
-            mode="json", exclude_none=True
+    raw_inst = upgraded.metadata.instrument
+    if inst_data is not None and raw_inst is not None:
+        upgraded_inst = (
+            raw_inst.model_dump(mode="json", exclude_none=True)
+            if hasattr(raw_inst, "model_dump")
+            else raw_inst
         )
 
     # ── Backup originals to S3 derived/ ─────────────────────────────
-    _backup_original_to_s3(acq_path, s3_location, "acquisition.json")
-
-    if inst_data is not None:
-        _backup_original_to_s3(
-            inst_path, s3_location, "instrument.json"
+    if dry_run:
+        logger.info(
+            "[DRY RUN] Would back up %s → %s/derived/v1_acquisition.json",
+            acq_path,
+            s3_location.rstrip("/"),
         )
+        if inst_data is not None:
+            logger.info(
+                "[DRY RUN] Would back up %s → %s/derived/v1_instrument.json",
+                inst_path,
+                s3_location.rstrip("/"),
+            )
+    else:
+        _backup_original_to_s3(acq_path, s3_location, "acquisition.json")
+        if inst_data is not None:
+            _backup_original_to_s3(
+                inst_path, s3_location, "instrument.json"
+            )
 
     # ── Upload upgraded files to S3 root ────────────────────────────
     if upgraded_acq is not None:
-        _upload_upgraded_to_s3(
-            upgraded_acq, s3_location, "acquisition.json"
-        )
+        if dry_run:
+            logger.info(
+                "[DRY RUN] Would upload upgraded acquisition.json "
+                "(schema_version %s) → %s/acquisition.json",
+                upgraded_acq.get("schema_version"),
+                s3_location.rstrip("/"),
+            )
+        else:
+            _upload_upgraded_to_s3(
+                upgraded_acq, s3_location, "acquisition.json"
+            )
         logger.info(
             "Upgraded acquisition.json to schema_version %s",
             upgraded_acq.get("schema_version"),
@@ -190,9 +218,17 @@ def upgrade_metadata(source_dir: str, s3_location: str) -> None:
         )
 
     if upgraded_inst is not None:
-        _upload_upgraded_to_s3(
-            upgraded_inst, s3_location, "instrument.json"
-        )
+        if dry_run:
+            logger.info(
+                "[DRY RUN] Would upload upgraded instrument.json "
+                "(schema_version %s) → %s/instrument.json",
+                upgraded_inst.get("schema_version"),
+                s3_location.rstrip("/"),
+            )
+        else:
+            _upload_upgraded_to_s3(
+                upgraded_inst, s3_location, "instrument.json"
+            )
         logger.info(
             "Upgraded instrument.json to schema_version %s",
             upgraded_inst.get("schema_version"),
@@ -227,11 +263,20 @@ def main():
             "s3://aind-open-data/exaSPIM_12345_2026-01-01_00-00-00"
         ),
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Perform the upgrade but skip S3 uploads. "
+            "Useful for local testing without write permissions."
+        ),
+    )
     args = parser.parse_args()
 
     upgrade_metadata(
         source_dir=args.source_dir,
         s3_location=args.s3_location,
+        dry_run=args.dry_run,
     )
 
 

@@ -23,6 +23,9 @@ from aind_exaspim_data_transformation.models import (
     CompressorName,
     ImarisJobSettings,
 )
+from aind_exaspim_data_transformation.upgrade_metadata import (
+    upgrade_metadata,
+)
 from aind_exaspim_data_transformation.utils import utils
 from aind_exaspim_data_transformation.utils.io_utils import ImarisReader
 
@@ -508,6 +511,29 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
                     bucket_name=bucket_name,
                 )
 
+    def _upgrade_metadata(self):
+        """Upgrade v1 metadata files and upload to S3.
+
+        Only runs when ``s3_location`` is configured.  Errors are logged
+        but do **not** abort the compression pipeline.
+        """
+        if self.job_settings.s3_location is None:
+            logging.info(
+                "No s3_location configured — skipping metadata upgrade."
+            )
+            return
+
+        try:
+            upgrade_metadata(
+                source_dir=str(self.job_settings.input_source),
+                s3_location=self.job_settings.s3_location,
+                dry_run=False,
+            )
+        except Exception:
+            logging.exception(
+                "Metadata upgrade failed — continuing with compression."
+            )
+
     def _upload_derivatives_folder(self):
         """
         Uploads the 'derivatives' folder if it exists in the input source.
@@ -720,8 +746,9 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
         """Main entrypoint to run the job."""
         job_start_time = time()
 
-        # Upload derivatives folder (only from partition 0)
+        # Worker 0 handles one-time setup: metadata upgrade + derivatives
         if self.job_settings.partition_to_process == 0:
+            self._upgrade_metadata()
             self._upload_derivatives_folder()
 
         if self.job_settings.partition_mode == "shard":
