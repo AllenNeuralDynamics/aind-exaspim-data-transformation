@@ -137,16 +137,16 @@ class TestUpgradeMetadata(unittest.TestCase):
 
             with patch(
                 "aind_exaspim_data_transformation.upgrade_metadata"
-                ".utils.copy_file_to_s3"
-            ) as mock_cp:
+                "._upload_bytes_to_s3"
+            ) as mock_upload:
                 upgrade_metadata(source_dir, "s3://bucket/dataset")
-                mock_cp.assert_not_called()
+                mock_upload.assert_not_called()
 
     @patch(
         "aind_exaspim_data_transformation.upgrade_metadata"
-        ".utils.copy_file_to_s3"
+        "._upload_bytes_to_s3"
     )
-    def test_upgrades_v1_acquisition(self, mock_cp):
+    def test_upgrades_v1_acquisition(self, mock_upload):
         """Should call the upgrader and upload files for v1 data."""
         v1_acq = {"schema_version": "1.0.4", "tiles": [], "axes": []}
 
@@ -179,24 +179,24 @@ class TestUpgradeMetadata(unittest.TestCase):
                 self.assertTrue(call_args[1]["skip_metadata_validation"])
 
                 # Should have uploaded: backup v1 acq + upgraded acq = 2 calls
-                self.assertEqual(mock_cp.call_count, 2)
+                self.assertEqual(mock_upload.call_count, 2)
 
                 # Check backup went to derived/
-                backup_call = mock_cp.call_args_list[0]
+                backup_call = mock_upload.call_args_list[0]
                 self.assertIn(
                     "derived/v1_acquisition.json", backup_call[0][1]
                 )
 
                 # Check upgraded went to root
-                upload_call = mock_cp.call_args_list[1]
+                upload_call = mock_upload.call_args_list[1]
                 self.assertIn("acquisition.json", upload_call[0][1])
                 self.assertNotIn("derived", upload_call[0][1])
 
     @patch(
         "aind_exaspim_data_transformation.upgrade_metadata"
-        ".utils.copy_file_to_s3"
+        "._upload_bytes_to_s3"
     )
-    def test_upgrades_both_acquisition_and_instrument(self, mock_cp):
+    def test_upgrades_both_acquisition_and_instrument(self, mock_upload):
         """Should process both files when both are present."""
         v1_acq = {"schema_version": "1.0.4", "tiles": [], "axes": []}
         v1_inst = {
@@ -234,9 +234,11 @@ class TestUpgradeMetadata(unittest.TestCase):
                 upgrade_metadata(source_dir, "s3://bucket/dataset")
 
                 # backup v1_acq + backup v1_inst + upgraded acq + upgraded inst
-                self.assertEqual(mock_cp.call_count, 4)
+                self.assertEqual(mock_upload.call_count, 4)
 
-                s3_dests = [call[0][1] for call in mock_cp.call_args_list]
+                s3_dests = [
+                    call[0][1] for call in mock_upload.call_args_list
+                ]
                 self.assertTrue(
                     any("derived/v1_acquisition.json" in d for d in s3_dests)
                 )
@@ -246,9 +248,9 @@ class TestUpgradeMetadata(unittest.TestCase):
 
     @patch(
         "aind_exaspim_data_transformation.upgrade_metadata"
-        ".utils.copy_file_to_s3"
+        "._upload_bytes_to_s3"
     )
-    def test_proceeds_without_instrument(self, mock_cp):
+    def test_proceeds_without_instrument(self, mock_upload):
         """Should upgrade acquisition even when instrument.json is absent."""
         v1_acq = {"schema_version": "1.0.4", "tiles": [], "axes": []}
 
@@ -278,13 +280,13 @@ class TestUpgradeMetadata(unittest.TestCase):
                 self.assertNotIn("instrument", call_args[0][0])
 
                 # Only backup + upload for acquisition = 2 calls
-                self.assertEqual(mock_cp.call_count, 2)
+                self.assertEqual(mock_upload.call_count, 2)
 
     @patch(
         "aind_exaspim_data_transformation.upgrade_metadata"
-        ".utils.copy_file_to_s3"
+        "._upload_bytes_to_s3"
     )
-    def test_s3_trailing_slash_handled(self, mock_cp):
+    def test_s3_trailing_slash_handled(self, mock_upload):
         """S3 location with trailing slash should not produce double slashes."""
         v1_acq = {"schema_version": "1.0.4", "tiles": []}
 
@@ -311,7 +313,7 @@ class TestUpgradeMetadata(unittest.TestCase):
                     source_dir, "s3://bucket/dataset/"  # trailing slash
                 )
 
-                for call in mock_cp.call_args_list:
+                for call in mock_upload.call_args_list:
                     s3_dest = call[0][1]
                     self.assertNotIn("//", s3_dest.replace("s3://", ""))
 
