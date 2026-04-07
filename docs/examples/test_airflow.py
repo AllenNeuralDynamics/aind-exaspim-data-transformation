@@ -39,7 +39,7 @@ JOB_TYPE = "default"  # registered job type on the dev cluster
 MAX_PARTITIONS = 64
 CPUS_PER_NODE = 4
 MIN_RAM_MB = 24_000
-MAX_RAM_MB = 50_000
+MAX_RAM_MB = 40_000
 SCHEDULING_OVERHEAD_MB = 1_300  # per tile, from profiling
 PROCESSING_OVERHEAD_MB = 4_400  # per shard, from profiling
 BUFFER_MB = 1_000
@@ -83,7 +83,9 @@ def _estimate_resources(
         MAX_RAM_MB // CPUS_PER_NODE,
     )
 
-    timeout_min = int(24 * 60)
+    timeout_min = int(
+        (n_tiles * tile_size_mb / 1024) / PROCESSING_SPEED_MB_PER_HOUR + 60
+    )
 
     return num_partitions, memory_per_cpu, timeout_min
 
@@ -113,15 +115,6 @@ def _derive_subject_id(path: str) -> str:
             else basename.split("_")[0]
         )
     return basename
-
-
-def _derive_dataset_name(source: str) -> str:
-    """Derive the dataset name from the source directory path.
-
-    Expects a path like ``/allen/aind/stage/exaSPIM/<dataset>/exaSPIM``.
-    Returns the ``<dataset>`` component.
-    """
-    return os.path.basename(os.path.dirname(os.path.normpath(source)))
 
 
 def submit_exaspim_job(
