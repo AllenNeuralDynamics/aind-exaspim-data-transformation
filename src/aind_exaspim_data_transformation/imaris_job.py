@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple, cast
 from urllib.parse import urlparse
 
 from aind_data_transformation.core import GenericEtl, JobResponse, get_parser
+from botocore.exceptions import BotoCoreError, ClientError
 from packaging import version
 
 from aind_exaspim_data_transformation.compress.imaris_to_zarr import (
@@ -23,9 +24,7 @@ from aind_exaspim_data_transformation.models import (
     CompressorName,
     ImarisJobSettings,
 )
-from aind_exaspim_data_transformation.upgrade_metadata import (
-    upgrade_metadata,
-)
+from aind_exaspim_data_transformation.upgrade_metadata import upgrade_metadata
 from aind_exaspim_data_transformation.utils import utils
 from aind_exaspim_data_transformation.utils.io_utils import ImarisReader
 
@@ -523,15 +522,25 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
             )
             return
 
+        logging.info(
+            "Starting metadata upgrade for source_dir=%s, "
+            "s3_location=%s",
+            self.job_settings.input_source,
+            self.job_settings.s3_location,
+        )
         try:
             upgrade_metadata(
                 source_dir=str(self.job_settings.input_source),
                 s3_location=self.job_settings.s3_location,
                 dry_run=False,
             )
-        except Exception:
-            logging.exception(
-                "Metadata upgrade failed — continuing with compression."
+            logging.info("Metadata upgrade completed successfully.")
+        except (OSError, ValueError, RuntimeError, ClientError, BotoCoreError) as exc:
+            logging.error(
+                "METADATA UPGRADE FAILED — continuing with compression. "
+                "Error: %s",
+                exc,
+                exc_info=True,
             )
 
     def _upload_derivatives_folder(self):
@@ -747,6 +756,8 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
         job_start_time = time()
 
         # Worker 0 handles one-time setup: metadata upgrade + derivatives
+        logging.info(f'Running partition {self.job_settings.partition_to_process} '
+                     f'of {self.job_settings.num_of_partitions}')
         if self.job_settings.partition_to_process == 0:
             self._upgrade_metadata()
             self._upload_derivatives_folder()

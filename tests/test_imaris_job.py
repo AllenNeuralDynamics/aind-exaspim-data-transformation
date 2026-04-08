@@ -1455,6 +1455,39 @@ class TestBuildGlobalShardTaskList(unittest.TestCase):
         # Should get 1 shard (from metadata shape), not 8 (from padded shape)
         self.assertEqual(len(tasks), 1)
 
+    # ── Import / wiring guards ──────────────────────────────────────
+    def test_upgrade_metadata_is_importable(self):
+        """upgrade_metadata must be importable from imaris_job at import
+        time (not only when patched by tests)."""
+        import aind_exaspim_data_transformation.imaris_job as mod
+
+        self.assertTrue(
+            hasattr(mod, "upgrade_metadata"),
+            "upgrade_metadata is not imported in imaris_job — "
+            "the function call in _upgrade_metadata() will raise NameError",
+        )
+        self.assertTrue(callable(mod.upgrade_metadata))
+
+    def test_partition_to_process_out_of_range_raises(self):
+        """partition_to_process >= num_of_partitions must be rejected."""
+        with self.assertRaises(ValueError):
+            ImarisJobSettings(
+                input_source="/fake/input",
+                output_directory="/fake/output",
+                num_of_partitions=2,
+                partition_to_process=2,
+            )
+
+    def test_partition_to_process_negative_raises(self):
+        """partition_to_process < 0 must be rejected."""
+        with self.assertRaises(ValueError):
+            ImarisJobSettings(
+                input_source="/fake/input",
+                output_directory="/fake/output",
+                num_of_partitions=2,
+                partition_to_process=-1,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
