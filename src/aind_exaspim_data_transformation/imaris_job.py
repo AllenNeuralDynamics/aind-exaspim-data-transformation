@@ -1,5 +1,6 @@
 """Module to handle zeiss data compression"""
 
+import json
 import logging
 import multiprocessing
 import os
@@ -564,8 +565,22 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
             logging.info(
                 f"Uploading {derivatives_path} to {s3_derivatives_dir}"
             )
-            utils.sync_dir_to_s3(derivatives_path, s3_derivatives_dir)
-            logging.info(f"{derivatives_path} uploaded to s3.")
+            try:
+                utils.sync_dir_to_s3(derivatives_path, s3_derivatives_dir)
+                logging.info(f"{derivatives_path} uploaded to s3.")
+            except (
+                OSError,
+                ValueError,
+                RuntimeError,
+                ClientError,
+                BotoCoreError,
+            ) as exc:
+                logging.error(
+                    "DERIVATIVES UPLOAD FAILED — continuing with "
+                    "compression. Error: %s",
+                    exc,
+                    exc_info=True,
+                )
 
     def _build_global_shard_task_list(
         self, stack_paths: List[Path]
@@ -756,8 +771,16 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
         job_start_time = time()
 
         # Worker 0 handles one-time setup: metadata upgrade + derivatives
-        logging.info(f'Running partition {self.job_settings.partition_to_process} '
-                     f'of {self.job_settings.num_of_partitions}')
+        logging.info(
+            "Running partition %s of %s",
+            self.job_settings.partition_to_process,
+            self.job_settings.num_of_partitions,
+        )
+        logging.info(
+            "partition_to_process type=%s value=%r",
+            type(self.job_settings.partition_to_process).__name__,
+            self.job_settings.partition_to_process,
+        )
         if self.job_settings.partition_to_process == 0:
             self._upgrade_metadata()
             self._upload_derivatives_folder()
@@ -795,11 +818,12 @@ def job_entrypoint(sys_args: list):
     parser = get_parser()
     cli_args = parser.parse_args(sys_args)
     if cli_args.job_settings is not None:
-        job_settings = ImarisJobSettings.model_validate_json(
-            cli_args.job_settings
-        )
+        job_settings_json = json.loads(cli_args.job_settings)
+        job_settings = ImarisJobSettings(**job_settings_json)
     elif cli_args.config_file is not None:
-        job_settings = ImarisJobSettings.from_config_file(cli_args.config_file)
+        with open(cli_args.config_file, "r", encoding="utf-8") as f:
+            file_contents = json.load(f)
+        job_settings = ImarisJobSettings(**file_contents)
     else:
         # Construct settings from env vars or defaults (backwards compatible)
         job_settings = ImarisJobSettings()  # type: ignore[call-arg]
