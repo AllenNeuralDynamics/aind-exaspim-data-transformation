@@ -1,5 +1,6 @@
 """Tests for ImarisCompressionJob class"""
 
+import os
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
@@ -1134,7 +1135,7 @@ class TestJobEntrypoint(unittest.TestCase):
         mock_get_parser.return_value = mock_parser
 
         mock_settings = MagicMock()
-        mock_settings_cls.model_validate_json.return_value = mock_settings
+        mock_settings_cls.return_value = mock_settings
 
         mock_job = MagicMock()
         mock_job.run_job.return_value = MagicMock(
@@ -1145,15 +1146,28 @@ class TestJobEntrypoint(unittest.TestCase):
         job_entrypoint(["--job-settings", "{}"])
 
         mock_mp.set_start_method.assert_called_once_with("spawn", force=True)
-        mock_settings_cls.model_validate_json.assert_called_once()
+        mock_settings_cls.assert_called_once_with(
+            input_source="/input",
+            output_directory="/output",
+            num_of_partitions=1,
+            partition_to_process=0,
+        )
         mock_job.run_job.assert_called_once()
 
     @patch("aind_exaspim_data_transformation.imaris_job.ImarisCompressionJob")
+    @patch("aind_exaspim_data_transformation.imaris_job.json.load")
+    @patch("builtins.open")
     @patch("aind_exaspim_data_transformation.imaris_job.ImarisJobSettings")
     @patch("aind_exaspim_data_transformation.imaris_job.get_parser")
     @patch("aind_exaspim_data_transformation.imaris_job.multiprocessing")
     def test_job_entrypoint_with_config_file(
-        self, mock_mp, mock_get_parser, mock_settings_cls, mock_job_cls
+        self,
+        mock_mp,
+        mock_get_parser,
+        mock_settings_cls,
+        mock_open,
+        mock_json_load,
+        mock_job_cls,
     ):
         """Test job_entrypoint with --config-file argument"""
         from aind_exaspim_data_transformation.imaris_job import job_entrypoint
@@ -1164,9 +1178,15 @@ class TestJobEntrypoint(unittest.TestCase):
         mock_args.config_file = "/path/to/config.json"
         mock_parser.parse_args.return_value = mock_args
         mock_get_parser.return_value = mock_parser
+        mock_json_load.return_value = {
+            "input_source": "/input",
+            "output_directory": "/output",
+            "num_of_partitions": 1,
+            "partition_to_process": 0,
+        }
 
         mock_settings = MagicMock()
-        mock_settings_cls.from_config_file.return_value = mock_settings
+        mock_settings_cls.return_value = mock_settings
 
         mock_job = MagicMock()
         mock_job.run_job.return_value = MagicMock(
@@ -1176,8 +1196,14 @@ class TestJobEntrypoint(unittest.TestCase):
 
         job_entrypoint([])
 
-        mock_settings_cls.from_config_file.assert_called_once_with(
-            "/path/to/config.json"
+        mock_open.assert_called_once_with(
+            "/path/to/config.json", "r", encoding="utf-8"
+        )
+        mock_settings_cls.assert_called_once_with(
+            input_source="/input",
+            output_directory="/output",
+            num_of_partitions=1,
+            partition_to_process=0,
         )
 
     @patch("aind_exaspim_data_transformation.imaris_job.ImarisCompressionJob")
@@ -1210,6 +1236,42 @@ class TestJobEntrypoint(unittest.TestCase):
 
         # Settings created from env vars (no arguments)
         mock_settings_cls.assert_called_once_with()
+
+    @patch("aind_exaspim_data_transformation.imaris_job.ImarisCompressionJob")
+    @patch("aind_exaspim_data_transformation.imaris_job.get_parser")
+    @patch("aind_exaspim_data_transformation.imaris_job.multiprocessing")
+    def test_job_entrypoint_job_settings_merges_partition_from_env(
+        self, mock_mp, mock_get_parser, mock_job_cls
+    ):
+        """Test env var partition is merged when missing from JSON settings."""
+        from aind_exaspim_data_transformation.imaris_job import job_entrypoint
+
+        mock_parser = MagicMock()
+        mock_args = MagicMock()
+        mock_args.job_settings = (
+            '{"input_source": "/input", "output_directory": "/output", '
+            '"num_of_partitions": 64}'
+        )
+        mock_args.config_file = None
+        mock_parser.parse_args.return_value = mock_args
+        mock_get_parser.return_value = mock_parser
+
+        mock_job = MagicMock()
+        mock_job.run_job.return_value = MagicMock(
+            model_dump_json=lambda: '{"status": 200}'
+        )
+        mock_job_cls.return_value = mock_job
+
+        with patch.dict(
+            os.environ,
+            {"TRANSFORMATION_JOB_PARTITION_TO_PROCESS": "0"},
+            clear=False,
+        ):
+            job_entrypoint(["--job-settings", "{}"])
+
+        self.assertTrue(mock_job_cls.called)
+        job_settings = mock_job_cls.call_args.kwargs["job_settings"]
+        self.assertEqual(job_settings.partition_to_process, 0)
 
 
 class TestGetTileTranslationFromAcquisition(unittest.TestCase):
