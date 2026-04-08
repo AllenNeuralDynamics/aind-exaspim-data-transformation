@@ -37,9 +37,11 @@ _V2_THRESHOLD = "2.0.0"
 
 
 def _load_metadata_file(path: Path) -> dict | None:
-    """Load a JSON metadata file, returning *None* if missing/empty."""
+    """Load a JSON metadata file, returning *None* if missing/empty/unreadable."""
     data = utils.read_json_as_dict(path)
-    if data is None:
+    if not data:
+        # read_json_as_dict returns {} for missing/unreadable files;
+        # treat both None and empty dict as "not available".
         return None
     return data
 
