@@ -6,7 +6,7 @@ from typing import List, Literal, Optional, Union
 
 from aind_data_transformation.core import BasicJobSettings
 from numcodecs import Blosc
-from pydantic import Field
+from pydantic import Field, model_validator
 
 PathLike = Union[str, Path]
 
@@ -141,3 +141,18 @@ class ImarisJobSettings(BasicJobSettings):
         ),
         title="Single Tile Upload Mode",
     )
+
+    @model_validator(mode="after")
+    def _validate_partition_index(self) -> "ImarisJobSettings":
+        """Ensure partition_to_process is within [0, num_of_partitions)."""
+        if self.partition_to_process < 0:
+            raise ValueError(
+                f"partition_to_process must be >= 0, "
+                f"got {self.partition_to_process}"
+            )
+        if self.partition_to_process >= self.num_of_partitions:
+            raise ValueError(
+                f"partition_to_process ({self.partition_to_process}) must be "
+                f"< num_of_partitions ({self.num_of_partitions})"
+            )
+        return self

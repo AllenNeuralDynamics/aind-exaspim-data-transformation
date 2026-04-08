@@ -37,9 +37,11 @@ _V2_THRESHOLD = "2.0.0"
 
 
 def _load_metadata_file(path: Path) -> dict | None:
-    """Load a JSON metadata file, returning *None* if missing/empty."""
+    """Load a JSON metadata file, returning *None* if missing/empty/unreadable."""
     data = utils.read_json_as_dict(path)
     if not data:
+        # read_json_as_dict returns {} for missing/unreadable files;
+        # treat both None and empty dict as "not available".
         return None
     return data
 
@@ -60,7 +62,8 @@ def _write_json_to_tempfile(data: dict) -> Path:
         with os.fdopen(fd, "w") as fh:
             json.dump(data, fh, indent=3, default=str)
     except Exception:
-        os.close(fd)
+        # fd is already closed by os.fdopen's context manager __exit__;
+        # do not call os.close(fd) again.
         raise
     return Path(tmp_path)
 
