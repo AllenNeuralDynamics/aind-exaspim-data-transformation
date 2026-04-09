@@ -511,11 +511,38 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
                     bucket_name=bucket_name,
                 )
 
+    @staticmethod
+    def _get_dataset_root_s3(s3_location: str) -> str:
+        """Strip the modality subfolder from an S3 location URI.
+
+        The pipeline passes ``s3_location`` as
+        ``s3://{bucket}/{dataset_name}/{modality}`` (e.g. ``…/SPIM``).
+        Metadata files must be written to the dataset root, one level up.
+
+        Parameters
+        ----------
+        s3_location : str
+            Full S3 URI that may include a trailing modality segment.
+
+        Returns
+        -------
+        str
+            S3 URI pointing to the dataset root (modality segment removed).
+        """
+        parsed = urlparse(s3_location)
+        dataset_root_path = str(Path(parsed.path.rstrip("/")).parent)
+        return f"s3://{parsed.netloc}{dataset_root_path}"
+
     def _upgrade_metadata(self):
         """Upgrade v1 metadata files and upload to S3.
 
         Only runs when ``s3_location`` is configured.  Errors are logged
         but do **not** abort the compression pipeline.
+
+        The pipeline provides ``s3_location`` with a modality subfolder
+        (e.g. ``s3://bucket/dataset/SPIM``).  Metadata files belong at
+        the dataset root, so the modality segment is stripped before
+        calling :func:`upgrade_metadata`.
         """
         if self.job_settings.s3_location is None:
             logging.info(
@@ -523,16 +550,23 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
             )
             return
 
+        # s3_location includes the modality subfolder (e.g. .../SPIM).
+        # Metadata files must go to the dataset root (one level up).
+        s3_dataset_root = self._get_dataset_root_s3(
+            self.job_settings.s3_location
+        )
+
         logging.info(
             "Starting metadata upgrade for source_dir=%s, "
-            "s3_location=%s",
+            "s3_location=%s (dataset root: %s)",
             self.job_settings.input_source,
             self.job_settings.s3_location,
+            s3_dataset_root,
         )
         try:
             upgrade_metadata(
                 source_dir=str(self.job_settings.input_source),
-                s3_location=self.job_settings.s3_location,
+                s3_location=s3_dataset_root,
                 dry_run=False,
             )
             logging.info("Metadata upgrade completed successfully.")

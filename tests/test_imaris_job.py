@@ -919,13 +919,34 @@ class TestImarisCompressionJob(unittest.TestCase):
 
     @patch("aind_exaspim_data_transformation.imaris_job.upgrade_metadata")
     def test_upgrade_metadata_called_with_s3_location(self, mock_upgrade):
-        """_upgrade_metadata calls upgrade_metadata when s3_location is set"""
+        """_upgrade_metadata strips modality suffix from s3_location"""
         settings = ImarisJobSettings(
             input_source="/fake/input",
             output_directory="/fake/output",
             num_of_partitions=1,
             partition_to_process=0,
+            s3_location="s3://bucket/dataset/SPIM",
+        )
+        job = ImarisCompressionJob(job_settings=settings)
+        job._upgrade_metadata()
+
+        mock_upgrade.assert_called_once_with(
+            source_dir="/fake/input",
             s3_location="s3://bucket/dataset",
+            dry_run=False,
+        )
+
+    @patch("aind_exaspim_data_transformation.imaris_job.upgrade_metadata")
+    def test_upgrade_metadata_strips_trailing_modality_slash(
+        self, mock_upgrade
+    ):
+        """_upgrade_metadata handles trailing slash on modality suffix"""
+        settings = ImarisJobSettings(
+            input_source="/fake/input",
+            output_directory="/fake/output",
+            num_of_partitions=1,
+            partition_to_process=0,
+            s3_location="s3://bucket/dataset/SPIM/",
         )
         job = ImarisCompressionJob(job_settings=settings)
         job._upgrade_metadata()

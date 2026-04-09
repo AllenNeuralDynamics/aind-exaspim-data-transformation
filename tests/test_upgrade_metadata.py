@@ -286,8 +286,14 @@ class TestUpgradeMetadata(unittest.TestCase):
         "aind_exaspim_data_transformation.upgrade_metadata"
         "._upload_bytes_to_s3"
     )
-    def test_fallback_when_upgrader_requires_instrument(self, mock_upload):
-        """Fallback uploads original acquisition when instrument is required."""
+    def test_warns_and_skips_when_upgrader_requires_instrument(
+        self, mock_upload
+    ):
+        """Missing instrument logs a loud warning and skips upload.
+
+        No exception should propagate and no S3 uploads should occur —
+        the function returns cleanly after logging.
+        """
         v1_acq = {"schema_version": "1.0.4", "tiles": [], "axes": []}
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -299,19 +305,11 @@ class TestUpgradeMetadata(unittest.TestCase):
                     "Instrument metadata is required to upgrade tiles to data streams"
                 ),
             ):
+                # Should NOT raise — returns cleanly after warning
                 upgrade_metadata(source_dir, "s3://bucket/dataset")
 
-                # backup v1 acq + upload original acq to root
-                self.assertEqual(mock_upload.call_count, 2)
-
-                backup_call = mock_upload.call_args_list[0]
-                self.assertIn(
-                    "derived/v1_acquisition.json", backup_call[0][1]
-                )
-
-                upload_call = mock_upload.call_args_list[1]
-                self.assertIn("acquisition.json", upload_call[0][1])
-                self.assertNotIn("derived", upload_call[0][1])
+                # No S3 uploads should have occurred
+                mock_upload.assert_not_called()
 
     @patch(
         "aind_exaspim_data_transformation.upgrade_metadata"
@@ -347,6 +345,203 @@ class TestUpgradeMetadata(unittest.TestCase):
                 for call in mock_upload.call_args_list:
                     s3_dest = call[0][1]
                     self.assertNotIn("//", s3_dest.replace("s3://", ""))
+
+
+    @patch(
+        "aind_exaspim_data_transformation.upgrade_metadata"
+        "._upload_bytes_to_s3"
+    )
+    def test_upgraded_version_is_v2_or_higher(self, mock_upload):
+        """Uploaded acquisition.json must have schema_version >= 2.0.0."""
+        v1_acq = {"schema_version": "1.0.4", "tiles": [], "axes": []}
+
+        fake_upgraded_acq = MagicMock()
+        fake_upgraded_acq.model_dump.return_value = {
+            "schema_version": "2.5.1",
+            "data_streams": [],
+        }
+
+        fake_metadata = MagicMock()
+        fake_metadata.acquisition = fake_upgraded_acq
+        fake_metadata.instrument = None
+
+        mock_upgrade_instance = MagicMock()
+        mock_upgrade_instance.metadata = fake_metadata
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source_dir = self._make_source_dir(tmpdir, acq_data=v1_acq)
+
+            with patch(
+                "aind_metadata_upgrader.upgrade.Upgrade",
+                return_value=mock_upgrade_instance,
+            ):
+                upgrade_metadata(source_dir, "s3://bucket/dataset")
+
+                # Find the non-backup upload call (the upgraded acquisition)
+                for call in mock_upload.call_args_list:
+                    s3_dest = call[0][1]
+                    if "derived" in s3_dest:
+                        continue
+                    # This is the upgraded file — parse the JSON body
+                    body = call[0][0]
+                    uploaded = json.loads(body.decode("utf-8"))
+                    from packaging.version import parse as vparse
+
+                    self.assertGreaterEqual(
+                        vparse(uploaded["schema_version"]),
+                        vparse("2.0.0"),
+                        f"Uploaded acquisition.json has "
+                        f"schema_version={uploaded['schema_version']} "
+                        f"which is below 2.0.0",
+                    )
+
+
+class TestUpgradeMetadataRealUpgrader(unittest.TestCase):
+    """Integration test using the real aind-metadata-upgrader (no mocks).
+
+    Uses ``docs/examples/acquisition.json`` from this repository with a
+    minimal ``instrument.json`` stub so the upgrader can run end-to-end.
+    Runs with ``dry_run=True`` so no S3 credentials are needed.
+    """
+
+    EXAMPLE_ACQ = Path(__file__).resolve().parent.parent / (
+        "docs/examples/acquisition.json"
+    )
+
+    def _make_dataset(self, tmpdir):
+        """Copy the example acquisition.json and create a minimal instrument
+        stub into a temporary dataset directory.  Returns the source_dir."""
+        dataset_dir = Path(tmpdir) / "exaSPIM_test_2026-01-01_00-00-00"
+        source_dir = dataset_dir / "exaSPIM"
+        source_dir.mkdir(parents=True)
+
+        # Copy the real v1 acquisition.json (use copy, not copy2,
+        # to avoid preserving restrictive source file permissions)
+        import shutil
+
+        shutil.copy(self.EXAMPLE_ACQ, dataset_dir / "acquisition.json")
+
+        # Create a minimal instrument.json to satisfy the upgrader.
+        # Based on the real v1 fixture from aind-metadata-upgrader tests.
+        instrument_stub = {
+            "schema_version": "0.10.20",
+            "describedBy": "https://raw.githubusercontent.com/AllenNeuralDynamics/aind-data-schema/main/src/aind_data_schema/core/instrument.py",
+            "instrument_id": "exaSPIM",
+            "instrument_type": "exaSPIM",
+            "manufacturer": {"name": "Other"},
+            "objectives": [
+                {
+                    "device_type": "Objective",
+                    "name": "Custom Objective",
+                    "serial_number": None,
+                    "manufacturer": {"name": "Other"},
+                    "model": "JM_DIAMOND 5.0X/1.3",
+                    "numerical_aperture": "0.305",
+                    "magnification": "5",
+                    "immersion": "air",
+                    "notes": None,
+                }
+            ],
+            "detectors": [
+                {
+                    "device_type": "Detector",
+                    "name": "Camera 1",
+                    "serial_number": None,
+                    "manufacturer": {"name": "Vieworks"},
+                    "detector_type": "Camera",
+                    "data_interface": "Coax",
+                    "cooling": "Air",
+                    "notes": None,
+                }
+            ],
+            "light_sources": [
+                {
+                    "device_type": "Laser",
+                    "name": "LAS-001",
+                    "serial_number": None,
+                    "manufacturer": {"name": "Oxxius"},
+                    "wavelength": 488,
+                    "wavelength_unit": "nanometer",
+                    "coupling": "Single-mode fiber",
+                    "notes": None,
+                }
+            ],
+            "fluorescence_filters": [],
+            "lenses": [],
+            "scanning_stages": [
+                {
+                    "device_type": "Motorized stage",
+                    "name": "stage-x",
+                    "serial_number": None,
+                    "manufacturer": {
+                        "name": "Applied Scientific Instrumentation",
+                        "abbreviation": "ASI",
+                    },
+                    "model": "MS-8000",
+                    "travel": "1000",
+                    "travel_unit": "millimeter",
+                    "stage_axis_direction": "Detection axis",
+                    "stage_axis_name": "X",
+                    "notes": None,
+                }
+            ],
+            "motorized_stages": [],
+            "additional_devices": [],
+            "com_ports": [],
+            "daqs": [],
+            "calibration_date": None,
+            "calibration_data": None,
+            "notes": None,
+        }
+        (dataset_dir / "instrument.json").write_text(
+            json.dumps(instrument_stub, indent=2)
+        )
+
+        return str(source_dir)
+
+    @patch(
+        "aind_exaspim_data_transformation.upgrade_metadata"
+        "._upload_bytes_to_s3"
+    )
+    def test_real_upgrade_produces_v2(self, mock_upload):
+        """The real upgrader must produce schema_version >= 2.0.0.
+
+        This test uses the actual ``aind_metadata_upgrader.upgrade.Upgrade``
+        class (no mocks) and validates the version of the JSON that would
+        be uploaded to S3.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source_dir = self._make_dataset(tmpdir)
+
+            upgrade_metadata(
+                source_dir, "s3://test-bucket/test-dataset", dry_run=False
+            )
+
+            # At least one non-backup upload should have occurred
+            non_backup_uploads = [
+                call
+                for call in mock_upload.call_args_list
+                if "derived" not in call[0][1]
+            ]
+            self.assertGreater(
+                len(non_backup_uploads),
+                0,
+                "Expected at least one non-backup upload",
+            )
+
+            for call in non_backup_uploads:
+                s3_dest = call[0][1]
+                body = call[0][0]
+                uploaded = json.loads(body.decode("utf-8"))
+                from packaging.version import parse as vparse
+
+                self.assertGreaterEqual(
+                    vparse(uploaded.get("schema_version", "0.0.0")),
+                    vparse("2.0.0"),
+                    f"Uploaded {s3_dest} has "
+                    f"schema_version={uploaded.get('schema_version')} "
+                    f"which is below 2.0.0",
+                )
 
 
 if __name__ == "__main__":
