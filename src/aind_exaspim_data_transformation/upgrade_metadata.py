@@ -250,22 +250,20 @@ def upgrade_metadata(
     try:
         upgraded = Upgrade(record, skip_metadata_validation=True)
     except (ValueError, KeyError, AttributeError) as exc:
-        if _is_instrument_required_error(exc):
+        if inst_data is None and _is_instrument_required_error(exc):
             logger.warning(
                 "\n"
                 "========================================================\n"
-                "  WARNING: METADATA UPGRADE SKIPPED                     \n"
+                "  WARNING: instrument.json NOT FOUND                    \n"
                 "========================================================\n"
-                "  instrument.json is missing and the upgrader requires  \n"
-                "  it to convert tiles → data_streams.                   \n"
-                "                                                        \n"
-                "  acquisition.json was NOT uploaded to S3.              \n"
-                "  No stale v1 metadata has been written.                \n"
+                "  The upgrader requires instrument metadata to convert  \n"
+                "  tiles → data_streams.  Without instrument.json the   \n"
+                "  acquisition cannot be upgraded to v2.                 \n"
                 "                                                        \n"
                 "  To fix: place a valid instrument.json next to         \n"
                 "  acquisition.json in the dataset directory and re-run. \n"
                 "========================================================\n"
-                "  Error: %s\n"
+                "  Original error: %s\n"
                 "========================================================",
                 exc,
             )

@@ -286,15 +286,28 @@ class TestUpgradeMetadata(unittest.TestCase):
         "aind_exaspim_data_transformation.upgrade_metadata"
         "._upload_bytes_to_s3"
     )
-    def test_warns_and_skips_when_upgrader_requires_instrument(
+    def test_warns_and_skips_when_instrument_missing(
         self, mock_upload
     ):
-        """Missing instrument logs a loud warning and skips upload.
+        """Missing instrument causes a warning and graceful return.
 
-        No exception should propagate and no S3 uploads should occur —
-        the function returns cleanly after logging.
+        When the upgrader raises ValueError because instrument metadata
+        is required and no instrument.json exists on disk, the function
+        should log a loud warning and return without uploading anything.
         """
-        v1_acq = {"schema_version": "1.0.4", "tiles": [], "axes": []}
+        v1_acq = {
+            "schema_version": "1.0.4",
+            "tiles": [
+                {
+                    "channel": {
+                        "channel_name": "488",
+                        "light_source_name": "488 nm",
+                        "excitation_wavelength": 488,
+                    }
+                }
+            ],
+            "axes": [],
+        }
 
         with tempfile.TemporaryDirectory() as tmpdir:
             source_dir = self._make_source_dir(tmpdir, acq_data=v1_acq)
@@ -302,13 +315,17 @@ class TestUpgradeMetadata(unittest.TestCase):
             with patch(
                 "aind_metadata_upgrader.upgrade.Upgrade",
                 side_effect=ValueError(
-                    "Instrument metadata is required to upgrade tiles to data streams"
+                    "Instrument metadata is required to upgrade "
+                    "tiles to data streams"
                 ),
-            ):
-                # Should NOT raise — returns cleanly after warning
+            ) as mock_upgrade_cls:
+                # Should NOT raise — returns gracefully
                 upgrade_metadata(source_dir, "s3://bucket/dataset")
 
-                # No S3 uploads should have occurred
+                # Upgrade was attempted once
+                self.assertEqual(mock_upgrade_cls.call_count, 1)
+
+                # Nothing should be uploaded
                 mock_upload.assert_not_called()
 
     @patch(
