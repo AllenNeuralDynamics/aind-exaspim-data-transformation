@@ -102,33 +102,9 @@ def _upload_upgraded_to_s3(
     _upload_bytes_to_s3(body, s3_dest)
 
 
-def _is_instrument_required_error(exc: ValueError) -> bool:
+def _is_instrument_required_error(exc: BaseException) -> bool:
     """Return True when *exc* indicates instrument metadata is required."""
     return "Instrument metadata is required" in str(exc)
-
-
-def _upload_original_acquisition_fallback(
-    acq_path: Path,
-    acq_data: dict,
-    s3_location: str,
-    dry_run: bool,
-) -> None:
-    """Backup and upload original acquisition.json when upgrade cannot proceed."""
-    if dry_run:
-        logger.info(
-            "[DRY RUN] Would back up %s → %s/derived/v1_acquisition.json",
-            acq_path,
-            s3_location.rstrip("/"),
-        )
-        logger.info(
-            "[DRY RUN] Would upload original acquisition.json "
-            "(schema_version %s) → %s/acquisition.json",
-            acq_data.get("schema_version"),
-            s3_location.rstrip("/"),
-        )
-    else:
-        _backup_original_to_s3(acq_path, s3_location, "acquisition.json")
-        _upload_upgraded_to_s3(acq_data, s3_location, "acquisition.json")
 
 
 def _to_json_dict(data: Any) -> dict | None:
@@ -273,23 +249,23 @@ def upgrade_metadata(
 
     try:
         upgraded = Upgrade(record, skip_metadata_validation=True)
-    except ValueError as exc:
+    except (ValueError, KeyError, AttributeError) as exc:
         if inst_data is None and _is_instrument_required_error(exc):
             logger.warning(
-                "instrument.json is missing and upgrader requires it; "
-                "falling back to uploading original acquisition.json "
-                "without schema upgrade. Error: %s",
+                "\n"
+                "========================================================\n"
+                "  WARNING: instrument.json NOT FOUND                    \n"
+                "========================================================\n"
+                "  The upgrader requires instrument metadata to convert  \n"
+                "  tiles → data_streams.  Without instrument.json the   \n"
+                "  acquisition cannot be upgraded to v2.                 \n"
+                "                                                        \n"
+                "  To fix: place a valid instrument.json next to         \n"
+                "  acquisition.json in the dataset directory and re-run. \n"
+                "========================================================\n"
+                "  Original error: %s\n"
+                "========================================================",
                 exc,
-            )
-            _upload_original_acquisition_fallback(
-                acq_path=acq_path,
-                acq_data=acq_data,
-                s3_location=s3_location,
-                dry_run=dry_run,
-            )
-            logger.info(
-                "Uploaded original acquisition.json without upgrade "
-                "because instrument metadata was unavailable."
             )
             return
         raise
