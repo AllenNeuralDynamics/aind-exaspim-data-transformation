@@ -19,6 +19,7 @@ import logging
 import os
 import tempfile
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 import boto3
@@ -101,6 +102,110 @@ def _upload_upgraded_to_s3(
     _upload_bytes_to_s3(body, s3_dest)
 
 
+def _is_instrument_required_error(exc: ValueError) -> bool:
+    """Return True when *exc* indicates instrument metadata is required."""
+    return "Instrument metadata is required" in str(exc)
+
+
+def _upload_original_acquisition_fallback(
+    acq_path: Path,
+    acq_data: dict,
+    s3_location: str,
+    dry_run: bool,
+) -> None:
+    """Backup and upload original acquisition.json when upgrade cannot proceed."""
+    if dry_run:
+        logger.info(
+            "[DRY RUN] Would back up %s → %s/derived/v1_acquisition.json",
+            acq_path,
+            s3_location.rstrip("/"),
+        )
+        logger.info(
+            "[DRY RUN] Would upload original acquisition.json "
+            "(schema_version %s) → %s/acquisition.json",
+            acq_data.get("schema_version"),
+            s3_location.rstrip("/"),
+        )
+    else:
+        _backup_original_to_s3(acq_path, s3_location, "acquisition.json")
+        _upload_upgraded_to_s3(acq_data, s3_location, "acquisition.json")
+
+
+def _to_json_dict(data: Any) -> dict | None:
+    """Convert upgrader output object to plain dict when available."""
+    if data is None:
+        return None
+    if hasattr(data, "model_dump"):
+        return data.model_dump(mode="json", exclude_none=True)
+    return data
+
+
+def _backup_originals(
+    acq_path: Path,
+    inst_path: Path,
+    inst_data: dict | None,
+    s3_location: str,
+    dry_run: bool,
+) -> None:
+    """Backup original v1 metadata files to S3 derived/ paths."""
+    if dry_run:
+        logger.info(
+            "[DRY RUN] Would back up %s → %s/derived/v1_acquisition.json",
+            acq_path,
+            s3_location.rstrip("/"),
+        )
+        if inst_data is not None:
+            logger.info(
+                "[DRY RUN] Would back up %s → %s/derived/v1_instrument.json",
+                inst_path,
+                s3_location.rstrip("/"),
+            )
+        return
+
+    _backup_original_to_s3(acq_path, s3_location, "acquisition.json")
+    if inst_data is not None:
+        _backup_original_to_s3(inst_path, s3_location, "instrument.json")
+
+
+def _upload_upgraded_outputs(
+    upgraded_acq: dict,
+    upgraded_inst: dict | None,
+    s3_location: str,
+    dry_run: bool,
+) -> None:
+    """Upload upgraded metadata files to dataset root."""
+    if dry_run:
+        logger.info(
+            "[DRY RUN] Would upload upgraded acquisition.json "
+            "(schema_version %s) → %s/acquisition.json",
+            upgraded_acq.get("schema_version"),
+            s3_location.rstrip("/"),
+        )
+    else:
+        _upload_upgraded_to_s3(upgraded_acq, s3_location, "acquisition.json")
+    logger.info(
+        "Upgraded acquisition.json to schema_version %s",
+        upgraded_acq.get("schema_version"),
+    )
+
+    if upgraded_inst is None:
+        return
+
+    if dry_run:
+        logger.info(
+            "[DRY RUN] Would upload upgraded instrument.json "
+            "(schema_version %s) → %s/instrument.json",
+            upgraded_inst.get("schema_version"),
+            s3_location.rstrip("/"),
+        )
+    else:
+        _upload_upgraded_to_s3(upgraded_inst, s3_location, "instrument.json")
+    logger.info(
+        "Upgraded instrument.json to schema_version %s",
+        upgraded_inst.get("schema_version"),
+    )
+
+
 def upgrade_metadata(
     source_dir: str, s3_location: str, dry_run: bool = False
 ) -> None:
@@ -162,93 +267,59 @@ def upgrade_metadata(
             inst_path,
         )
 
-    # ── Build upgrader input record ─────────────────────────────────
     record: dict = {"acquisition": acq_data}
     if inst_data is not None:
         record["instrument"] = inst_data
 
-    # skip_metadata_validation=True because we only have partial metadata
-    # (no subject, procedures, data_description, etc.)
-    upgraded = Upgrade(record, skip_metadata_validation=True)
-
-    # ── Extract upgraded dicts ──────────────────────────────────────
-    upgraded_acq = None
-    raw_acq = upgraded.metadata.acquisition
-    if raw_acq is not None:
-        upgraded_acq = (
-            raw_acq.model_dump(mode="json", exclude_none=True)
-            if hasattr(raw_acq, "model_dump")
-            else raw_acq
-        )
-
-    upgraded_inst = None
-    raw_inst = upgraded.metadata.instrument
-    if inst_data is not None and raw_inst is not None:
-        upgraded_inst = (
-            raw_inst.model_dump(mode="json", exclude_none=True)
-            if hasattr(raw_inst, "model_dump")
-            else raw_inst
-        )
-
-    # ── Backup originals to S3 derived/ ─────────────────────────────
-    if dry_run:
-        logger.info(
-            "[DRY RUN] Would back up %s → %s/derived/v1_acquisition.json",
-            acq_path,
-            s3_location.rstrip("/"),
-        )
-        if inst_data is not None:
+    try:
+        upgraded = Upgrade(record, skip_metadata_validation=True)
+    except ValueError as exc:
+        if inst_data is None and _is_instrument_required_error(exc):
+            logger.warning(
+                "instrument.json is missing and upgrader requires it; "
+                "falling back to uploading original acquisition.json "
+                "without schema upgrade. Error: %s",
+                exc,
+            )
+            _upload_original_acquisition_fallback(
+                acq_path=acq_path,
+                acq_data=acq_data,
+                s3_location=s3_location,
+                dry_run=dry_run,
+            )
             logger.info(
-                "[DRY RUN] Would back up %s → %s/derived/v1_instrument.json",
-                inst_path,
-                s3_location.rstrip("/"),
+                "Uploaded original acquisition.json without upgrade "
+                "because instrument metadata was unavailable."
             )
-    else:
-        _backup_original_to_s3(acq_path, s3_location, "acquisition.json")
-        if inst_data is not None:
-            _backup_original_to_s3(
-                inst_path, s3_location, "instrument.json"
-            )
+            return
+        raise
 
-    # ── Upload upgraded files to S3 root ────────────────────────────
-    if upgraded_acq is not None:
-        if dry_run:
-            logger.info(
-                "[DRY RUN] Would upload upgraded acquisition.json "
-                "(schema_version %s) → %s/acquisition.json",
-                upgraded_acq.get("schema_version"),
-                s3_location.rstrip("/"),
-            )
-        else:
-            _upload_upgraded_to_s3(
-                upgraded_acq, s3_location, "acquisition.json"
-            )
-        logger.info(
-            "Upgraded acquisition.json to schema_version %s",
-            upgraded_acq.get("schema_version"),
-        )
-    else:
+    upgraded_acq = _to_json_dict(upgraded.metadata.acquisition)
+    upgraded_inst = (
+        _to_json_dict(upgraded.metadata.instrument)
+        if inst_data is not None
+        else None
+    )
+
+    if upgraded_acq is None:
         raise RuntimeError(
             "Upgrader did not produce an upgraded acquisition.json. "
             "Check the input data and upgrader logs above."
         )
 
-    if upgraded_inst is not None:
-        if dry_run:
-            logger.info(
-                "[DRY RUN] Would upload upgraded instrument.json "
-                "(schema_version %s) → %s/instrument.json",
-                upgraded_inst.get("schema_version"),
-                s3_location.rstrip("/"),
-            )
-        else:
-            _upload_upgraded_to_s3(
-                upgraded_inst, s3_location, "instrument.json"
-            )
-        logger.info(
-            "Upgraded instrument.json to schema_version %s",
-            upgraded_inst.get("schema_version"),
-        )
+    _backup_originals(
+        acq_path=acq_path,
+        inst_path=inst_path,
+        inst_data=inst_data,
+        s3_location=s3_location,
+        dry_run=dry_run,
+    )
+    _upload_upgraded_outputs(
+        upgraded_acq=upgraded_acq,
+        upgraded_inst=upgraded_inst,
+        s3_location=s3_location,
+        dry_run=dry_run,
+    )
 
     logger.info("Metadata upgrade complete.")
 

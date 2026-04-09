@@ -286,6 +286,37 @@ class TestUpgradeMetadata(unittest.TestCase):
         "aind_exaspim_data_transformation.upgrade_metadata"
         "._upload_bytes_to_s3"
     )
+    def test_fallback_when_upgrader_requires_instrument(self, mock_upload):
+        """Fallback uploads original acquisition when instrument is required."""
+        v1_acq = {"schema_version": "1.0.4", "tiles": [], "axes": []}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source_dir = self._make_source_dir(tmpdir, acq_data=v1_acq)
+
+            with patch(
+                "aind_metadata_upgrader.upgrade.Upgrade",
+                side_effect=ValueError(
+                    "Instrument metadata is required to upgrade tiles to data streams"
+                ),
+            ):
+                upgrade_metadata(source_dir, "s3://bucket/dataset")
+
+                # backup v1 acq + upload original acq to root
+                self.assertEqual(mock_upload.call_count, 2)
+
+                backup_call = mock_upload.call_args_list[0]
+                self.assertIn(
+                    "derived/v1_acquisition.json", backup_call[0][1]
+                )
+
+                upload_call = mock_upload.call_args_list[1]
+                self.assertIn("acquisition.json", upload_call[0][1])
+                self.assertNotIn("derived", upload_call[0][1])
+
+    @patch(
+        "aind_exaspim_data_transformation.upgrade_metadata"
+        "._upload_bytes_to_s3"
+    )
     def test_s3_trailing_slash_handled(self, mock_upload):
         """S3 location with trailing slash should not produce double slashes."""
         v1_acq = {"schema_version": "1.0.4", "tiles": []}
