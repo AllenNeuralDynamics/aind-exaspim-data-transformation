@@ -781,7 +781,7 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
             type(self.job_settings.partition_to_process).__name__,
             self.job_settings.partition_to_process,
         )
-        if self.job_settings.partition_to_process == 63:
+        if self.job_settings.partition_to_process == 0:
             self._upgrade_metadata()
             self._upload_derivatives_folder()
 
