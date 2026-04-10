@@ -102,11 +102,6 @@ def _upload_upgraded_to_s3(
     _upload_bytes_to_s3(body, s3_dest)
 
 
-def _is_instrument_required_error(exc: BaseException) -> bool:
-    """Return True when *exc* indicates instrument metadata is required."""
-    return "Instrument metadata is required" in str(exc)
-
-
 def _to_json_dict(data: Any) -> dict | None:
     """Convert upgrader output object to plain dict when available."""
     if data is None:
@@ -233,49 +228,10 @@ def upgrade_metadata(
         acq_data.get("schema_version"),
     )
 
-    # ── Load instrument.json (optional) ─────────────────────────────
-    inst_path = metadata_dir / "instrument.json"
-    inst_data = _load_metadata_file(inst_path)
-
-    if inst_data is None:
-        logger.info(
-            "No instrument.json found at %s — proceeding without it.",
-            inst_path,
-        )
-
-    record: dict = {"acquisition": acq_data}
-    if inst_data is not None:
-        record["instrument"] = inst_data
-
-    try:
-        upgraded = Upgrade(record, skip_metadata_validation=True)
-    except (ValueError, KeyError, AttributeError) as exc:
-        if inst_data is None and _is_instrument_required_error(exc):
-            logger.warning(
-                "\n"
-                "========================================================\n"
-                "  WARNING: instrument.json NOT FOUND                    \n"
-                "========================================================\n"
-                "  The upgrader requires instrument metadata to convert  \n"
-                "  tiles → data_streams.  Without instrument.json the   \n"
-                "  acquisition cannot be upgraded to v2.                 \n"
-                "                                                        \n"
-                "  To fix: place a valid instrument.json next to         \n"
-                "  acquisition.json in the dataset directory and re-run. \n"
-                "========================================================\n"
-                "  Original error: %s\n"
-                "========================================================",
-                exc,
-            )
-            return
-        raise
-
-    upgraded_acq = _to_json_dict(upgraded.metadata.acquisition)
-    upgraded_inst = (
-        _to_json_dict(upgraded.metadata.instrument)
-        if inst_data is not None
-        else None
-    )
+    # ── Upgrade acquisition.json independently ─────────────────────
+    acq_record: dict = {"acquisition": acq_data}
+    upgraded_acq_obj = Upgrade(acq_record, skip_metadata_validation=True)
+    upgraded_acq = _to_json_dict(upgraded_acq_obj.metadata.acquisition)
 
     if upgraded_acq is None:
         raise RuntimeError(
@@ -283,6 +239,45 @@ def upgrade_metadata(
             "Check the input data and upgrader logs above."
         )
 
+    logger.info(
+        "acquisition.json upgraded: %s → %s",
+        acq_data.get("schema_version"),
+        upgraded_acq.get("schema_version"),
+    )
+
+    # ── Load and upgrade instrument.json independently (optional) ──
+    inst_path = metadata_dir / "instrument.json"
+    inst_data = _load_metadata_file(inst_path)
+    upgraded_inst: dict | None = None
+
+    if inst_data is None:
+        logger.info(
+            "No instrument.json found at %s — skipping instrument upgrade.",
+            inst_path,
+        )
+    elif not _needs_upgrade(inst_data):
+        logger.info(
+            "instrument.json is already schema_version %s (>= %s), "
+            "skipping upgrade.",
+            inst_data.get("schema_version"),
+            _V2_THRESHOLD,
+        )
+    else:
+        logger.info(
+            "instrument.json is schema_version %s — upgrading …",
+            inst_data.get("schema_version"),
+        )
+        inst_record: dict = {"instrument": inst_data}
+        upgraded_inst_obj = Upgrade(inst_record, skip_metadata_validation=True)
+        upgraded_inst = _to_json_dict(upgraded_inst_obj.metadata.instrument)
+        if upgraded_inst is not None:
+            logger.info(
+                "instrument.json upgraded: %s → %s",
+                inst_data.get("schema_version"),
+                upgraded_inst.get("schema_version"),
+            )
+
+    # ── Backup originals and upload upgraded files ──────────────────
     _backup_originals(
         acq_path=acq_path,
         inst_path=inst_path,

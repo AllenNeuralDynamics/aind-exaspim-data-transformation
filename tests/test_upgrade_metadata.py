@@ -215,12 +215,12 @@ class TestUpgradeMetadata(unittest.TestCase):
             "schema_version": "2.5.1",
         }
 
-        fake_metadata = MagicMock()
-        fake_metadata.acquisition = fake_upgraded_acq
-        fake_metadata.instrument = fake_upgraded_inst
+        # First Upgrade() call → acq, second → inst
+        acq_upgrade = MagicMock()
+        acq_upgrade.metadata.acquisition = fake_upgraded_acq
 
-        mock_upgrade_instance = MagicMock()
-        mock_upgrade_instance.metadata = fake_metadata
+        inst_upgrade = MagicMock()
+        inst_upgrade.metadata.instrument = fake_upgraded_inst
 
         with tempfile.TemporaryDirectory() as tmpdir:
             source_dir = self._make_source_dir(
@@ -229,9 +229,22 @@ class TestUpgradeMetadata(unittest.TestCase):
 
             with patch(
                 "aind_metadata_upgrader.upgrade.Upgrade",
-                return_value=mock_upgrade_instance,
-            ):
+                side_effect=[acq_upgrade, inst_upgrade],
+            ) as mock_upgrade_cls:
                 upgrade_metadata(source_dir, "s3://bucket/dataset")
+
+                # Upgrade called twice — once per file
+                self.assertEqual(mock_upgrade_cls.call_count, 2)
+
+                # First call: acquisition only
+                acq_record = mock_upgrade_cls.call_args_list[0][0][0]
+                self.assertIn("acquisition", acq_record)
+                self.assertNotIn("instrument", acq_record)
+
+                # Second call: instrument only
+                inst_record = mock_upgrade_cls.call_args_list[1][0][0]
+                self.assertIn("instrument", inst_record)
+                self.assertNotIn("acquisition", inst_record)
 
                 # backup v1_acq + backup v1_inst + upgraded acq + upgraded inst
                 self.assertEqual(mock_upload.call_count, 4)
@@ -286,14 +299,14 @@ class TestUpgradeMetadata(unittest.TestCase):
         "aind_exaspim_data_transformation.upgrade_metadata"
         "._upload_bytes_to_s3"
     )
-    def test_warns_and_skips_when_instrument_missing(
+    def test_upgrades_acquisition_without_instrument(
         self, mock_upload
     ):
-        """Missing instrument causes a warning and graceful return.
+        """Acquisition upgrades independently when instrument.json is missing.
 
-        When the upgrader raises ValueError because instrument metadata
-        is required and no instrument.json exists on disk, the function
-        should log a loud warning and return without uploading anything.
+        The acquisition and instrument are upgraded in separate Upgrade()
+        calls, so a missing instrument should NOT prevent the acquisition
+        from being upgraded and uploaded.
         """
         v1_acq = {
             "schema_version": "1.0.4",
@@ -309,24 +322,49 @@ class TestUpgradeMetadata(unittest.TestCase):
             "axes": [],
         }
 
+        fake_upgraded_acq = MagicMock()
+        fake_upgraded_acq.model_dump.return_value = {
+            "schema_version": "2.4.0",
+            "data_streams": [],
+        }
+        fake_metadata = MagicMock()
+        fake_metadata.acquisition = fake_upgraded_acq
+
+        mock_upgrade_instance = MagicMock()
+        mock_upgrade_instance.metadata = fake_metadata
+
         with tempfile.TemporaryDirectory() as tmpdir:
             source_dir = self._make_source_dir(tmpdir, acq_data=v1_acq)
 
             with patch(
                 "aind_metadata_upgrader.upgrade.Upgrade",
-                side_effect=ValueError(
-                    "Instrument metadata is required to upgrade "
-                    "tiles to data streams"
-                ),
+                return_value=mock_upgrade_instance,
             ) as mock_upgrade_cls:
-                # Should NOT raise — returns gracefully
                 upgrade_metadata(source_dir, "s3://bucket/dataset")
 
-                # Upgrade was attempted once
+                # Upgrade called once — only for acquisition
                 self.assertEqual(mock_upgrade_cls.call_count, 1)
+                record = mock_upgrade_cls.call_args_list[0][0][0]
+                self.assertIn("acquisition", record)
+                self.assertNotIn("instrument", record)
 
-                # Nothing should be uploaded
-                mock_upload.assert_not_called()
+                # backup v1 acq + upload upgraded acq = 2 uploads
+                self.assertEqual(mock_upload.call_count, 2)
+
+                s3_dests = [
+                    call[0][1] for call in mock_upload.call_args_list
+                ]
+                self.assertTrue(
+                    any("derived/v1_acquisition.json" in d for d in s3_dests),
+                    "Expected backup of original acquisition.json",
+                )
+                self.assertTrue(
+                    any(
+                        d.endswith("/acquisition.json")
+                        for d in s3_dests
+                    ),
+                    "Expected upload of upgraded acquisition.json",
+                )
 
     @patch(
         "aind_exaspim_data_transformation.upgrade_metadata"
@@ -535,6 +573,56 @@ class TestUpgradeMetadataRealUpgrader(unittest.TestCase):
             )
 
             # At least one non-backup upload should have occurred
+            non_backup_uploads = [
+                call
+                for call in mock_upload.call_args_list
+                if "derived" not in call[0][1]
+            ]
+            self.assertGreater(
+                len(non_backup_uploads),
+                0,
+                "Expected at least one non-backup upload",
+            )
+
+            for call in non_backup_uploads:
+                s3_dest = call[0][1]
+                body = call[0][0]
+                uploaded = json.loads(body.decode("utf-8"))
+                from packaging.version import parse as vparse
+
+                self.assertGreaterEqual(
+                    vparse(uploaded.get("schema_version", "0.0.0")),
+                    vparse("2.0.0"),
+                    f"Uploaded {s3_dest} has "
+                    f"schema_version={uploaded.get('schema_version')} "
+                    f"which is below 2.0.0",
+                )
+
+
+    @patch(
+        "aind_exaspim_data_transformation.upgrade_metadata"
+        "._upload_bytes_to_s3"
+    )
+    def test_real_upgrade_without_instrument_produces_v2(self, mock_upload):
+        """Acquisition upgrades to v2 even without instrument.json.
+
+        Uses the real upgrader with only acquisition.json (no instrument).
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dataset_dir = Path(tmpdir) / "exaSPIM_test_no_inst"
+            source_dir = dataset_dir / "exaSPIM"
+            source_dir.mkdir(parents=True)
+
+            import shutil
+            shutil.copy(self.EXAMPLE_ACQ, dataset_dir / "acquisition.json")
+
+            upgrade_metadata(
+                str(source_dir),
+                "s3://test-bucket/test-dataset",
+                dry_run=False,
+            )
+
+            # Should have uploads: backup v1 acq + upgraded acq
             non_backup_uploads = [
                 call
                 for call in mock_upload.call_args_list
