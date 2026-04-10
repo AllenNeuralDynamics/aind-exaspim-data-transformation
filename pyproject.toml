@@ -32,7 +32,7 @@ dependencies = [
     "tensorstore==0.1.80",
     "psutil==7.2.2", 
     "boto3==1.42.36",
-    "aind-metadata-upgrader>=0.8.0"
+    "aind-metadata-upgrader==11.4.0"
 ]
 
 [tool.setuptools]
