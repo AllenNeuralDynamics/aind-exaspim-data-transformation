@@ -79,7 +79,9 @@ def _upload_bytes_to_s3(body: bytes, s3_uri: str) -> None:
     """Upload raw bytes to an S3 URI using boto3."""
     bucket, key = _parse_s3_uri(s3_uri)
     s3 = boto3.client("s3")
-    s3.put_object(Bucket=bucket, Key=key, Body=body, ContentType="application/json")
+    s3.put_object(
+        Bucket=bucket, Key=key, Body=body, ContentType="application/json"
+    )
     logger.info("Uploaded %d bytes → %s", len(body), s3_uri)
 
 
@@ -109,6 +111,57 @@ def _to_json_dict(data: Any) -> dict | None:
     if hasattr(data, "model_dump"):
         return data.model_dump(mode="json", exclude_none=True)
     return data
+
+
+def _upgrade_with_instrument(
+    acq_data: dict, inst_data: dict
+) -> tuple[dict, dict | None]:
+    """Upgrade acquisition and instrument together via ``Upgrade()``.
+
+    Returns ``(upgraded_acq_dict, upgraded_inst_dict)``.
+    """
+    from aind_metadata_upgrader.upgrade import Upgrade
+
+    record: dict = {"acquisition": acq_data, "instrument": inst_data}
+    upgraded = Upgrade(record, skip_metadata_validation=True)
+
+    upgraded_acq = _to_json_dict(upgraded.metadata.acquisition)
+    upgraded_inst = _to_json_dict(upgraded.metadata.instrument)
+    return upgraded_acq, upgraded_inst
+
+
+def _upgrade_acquisition_only(acq_data: dict) -> dict:
+    """Upgrade acquisition without a real instrument.json.
+
+    Calls the acquisition upgrader directly with a minimal metadata
+    stub containing empty ``fluorescence_filters`` and
+    ``light_sources`` lists, bypassing the full ``Upgrade()`` pipeline
+    (which would also try to upgrade the instrument and fail
+    validation).
+
+    Returns the upgraded acquisition as a plain dict.
+    """
+    from aind_data_schema.core.acquisition import Acquisition
+    from aind_metadata_upgrader.acquisition.v1v2 import AcquisitionV1V2
+
+    target_version = Acquisition.model_fields[
+        "schema_version"
+    ].default
+
+    metadata_stub = {
+        "instrument": {
+            "fluorescence_filters": [],
+            "light_sources": [],
+        },
+    }
+
+    upgraded_data = AcquisitionV1V2().upgrade(
+        acq_data.copy(), target_version, metadata=metadata_stub
+    )
+
+    # Validate / normalise through the Acquisition model
+    acq_model = Acquisition.model_construct(**upgraded_data)
+    return acq_model.model_dump(mode="json", exclude_none=True)
 
 
 def _backup_originals(
@@ -198,9 +251,6 @@ def upgrade_metadata(
         If True, perform the upgrade and validate results but skip all
         S3 uploads.  Useful for local testing without write permissions.
     """
-    # Lazy import — only needed when we actually upgrade
-    from aind_metadata_upgrader.upgrade import Upgrade
-
     metadata_dir = Path(source_dir).parent
     logger.info("Looking for metadata in %s", metadata_dir)
 
@@ -228,10 +278,36 @@ def upgrade_metadata(
         acq_data.get("schema_version"),
     )
 
-    # ── Upgrade acquisition.json independently ─────────────────────
-    acq_record: dict = {"acquisition": acq_data}
-    upgraded_acq_obj = Upgrade(acq_record, skip_metadata_validation=True)
-    upgraded_acq = _to_json_dict(upgraded_acq_obj.metadata.acquisition)
+    # ── Load instrument.json (optional) ─────────────────────────────
+    inst_path = metadata_dir / "instrument.json"
+    inst_data = _load_metadata_file(inst_path)
+
+    if inst_data is None:
+        logger.warning(
+            "No instrument.json found at %s — "
+            "acquisition will be upgraded with empty "
+            "fluorescence_filters / light_sources.",
+            inst_path,
+        )
+
+    # ── Build the upgrade record ────────────────────────────────────
+    # When both files are present we hand them to Upgrade() together so
+    # the acquisition upgrader can read fluorescence_filters and
+    # light_sources from the instrument metadata.
+    #
+    # When instrument.json is absent we call the acquisition upgrader
+    # directly with a minimal metadata stub containing empty filter /
+    # source lists.  This avoids running the full instrument upgrade
+    # pipeline (which requires valid Laser, Objective, ScanningStage
+    # components) while still producing a v2 acquisition — the
+    # resulting data_streams simply won't have filter / laser details.
+    if inst_data is not None:
+        upgraded_acq, upgraded_inst = _upgrade_with_instrument(
+            acq_data, inst_data
+        )
+    else:
+        upgraded_acq = _upgrade_acquisition_only(acq_data)
+        upgraded_inst = None
 
     if upgraded_acq is None:
         raise RuntimeError(
@@ -244,38 +320,12 @@ def upgrade_metadata(
         acq_data.get("schema_version"),
         upgraded_acq.get("schema_version"),
     )
-
-    # ── Load and upgrade instrument.json independently (optional) ──
-    inst_path = metadata_dir / "instrument.json"
-    inst_data = _load_metadata_file(inst_path)
-    upgraded_inst: dict | None = None
-
-    if inst_data is None:
+    if upgraded_inst is not None:
         logger.info(
-            "No instrument.json found at %s — skipping instrument upgrade.",
-            inst_path,
-        )
-    elif not _needs_upgrade(inst_data):
-        logger.info(
-            "instrument.json is already schema_version %s (>= %s), "
-            "skipping upgrade.",
+            "instrument.json upgraded: %s → %s",
             inst_data.get("schema_version"),
-            _V2_THRESHOLD,
+            upgraded_inst.get("schema_version"),
         )
-    else:
-        logger.info(
-            "instrument.json is schema_version %s — upgrading …",
-            inst_data.get("schema_version"),
-        )
-        inst_record: dict = {"instrument": inst_data}
-        upgraded_inst_obj = Upgrade(inst_record, skip_metadata_validation=True)
-        upgraded_inst = _to_json_dict(upgraded_inst_obj.metadata.instrument)
-        if upgraded_inst is not None:
-            logger.info(
-                "instrument.json upgraded: %s → %s",
-                inst_data.get("schema_version"),
-                upgraded_inst.get("schema_version"),
-            )
 
     # ── Backup originals and upload upgraded files ──────────────────
     _backup_originals(

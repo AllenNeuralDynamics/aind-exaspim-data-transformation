@@ -490,9 +490,7 @@ class TestImarisCompressionJob(unittest.TestCase):
             with patch.object(
                 job, "_upload_derivatives_folder"
             ) as mock_upload:
-                with patch.object(
-                    job, "_upgrade_metadata"
-                ) as mock_upgrade:
+                with patch.object(job, "_upgrade_metadata") as mock_upgrade:
                     with patch.object(job, "_write_stacks") as mock_write:
                         mock_get_list.return_value = [
                             ["file1.ims"],
@@ -529,9 +527,7 @@ class TestImarisCompressionJob(unittest.TestCase):
             with patch.object(
                 job, "_upload_derivatives_folder"
             ) as mock_upload:
-                with patch.object(
-                    job, "_upgrade_metadata"
-                ) as mock_upgrade:
+                with patch.object(job, "_upgrade_metadata") as mock_upgrade:
                     with patch.object(
                         job, "_run_shard_partitioned"
                     ) as mock_shard:
@@ -902,9 +898,7 @@ class TestImarisCompressionJob(unittest.TestCase):
             with patch.object(
                 job, "_upload_derivatives_folder"
             ) as mock_upload:
-                with patch.object(
-                    job, "_upgrade_metadata"
-                ) as mock_upgrade:
+                with patch.object(job, "_upgrade_metadata") as mock_upgrade:
                     with patch.object(job, "_write_stacks") as mock_write:
                         mock_get_list.return_value = [
                             ["file1.ims"],
