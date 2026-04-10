@@ -570,7 +570,13 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
                 dry_run=False,
             )
             logging.info("Metadata upgrade completed successfully.")
-        except (OSError, ValueError, RuntimeError, ClientError, BotoCoreError) as exc:
+        except (
+            OSError,
+            ValueError,
+            RuntimeError,
+            ClientError,
+            BotoCoreError,
+        ) as exc:
             logging.error(
                 "METADATA UPGRADE FAILED — continuing with compression. "
                 "Error: %s",

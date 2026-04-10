@@ -183,9 +183,7 @@ class TestUpgradeMetadata(unittest.TestCase):
 
                 # Check backup went to derived/
                 backup_call = mock_upload.call_args_list[0]
-                self.assertIn(
-                    "derived/v1_acquisition.json", backup_call[0][1]
-                )
+                self.assertIn("derived/v1_acquisition.json", backup_call[0][1])
 
                 # Check upgraded went to root
                 upload_call = mock_upload.call_args_list[1]
@@ -249,9 +247,7 @@ class TestUpgradeMetadata(unittest.TestCase):
                 # backup v1_acq + backup v1_inst + upgraded acq + upgraded inst
                 self.assertEqual(mock_upload.call_count, 4)
 
-                s3_dests = [
-                    call[0][1] for call in mock_upload.call_args_list
-                ]
+                s3_dests = [call[0][1] for call in mock_upload.call_args_list]
                 self.assertTrue(
                     any("derived/v1_acquisition.json" in d for d in s3_dests)
                 )
@@ -299,9 +295,7 @@ class TestUpgradeMetadata(unittest.TestCase):
         "aind_exaspim_data_transformation.upgrade_metadata"
         "._upload_bytes_to_s3"
     )
-    def test_upgrades_acquisition_without_instrument(
-        self, mock_upload
-    ):
+    def test_upgrades_acquisition_without_instrument(self, mock_upload):
         """Acquisition upgrades independently when instrument.json is missing.
 
         The acquisition and instrument are upgraded in separate Upgrade()
@@ -351,18 +345,13 @@ class TestUpgradeMetadata(unittest.TestCase):
                 # backup v1 acq + upload upgraded acq = 2 uploads
                 self.assertEqual(mock_upload.call_count, 2)
 
-                s3_dests = [
-                    call[0][1] for call in mock_upload.call_args_list
-                ]
+                s3_dests = [call[0][1] for call in mock_upload.call_args_list]
                 self.assertTrue(
                     any("derived/v1_acquisition.json" in d for d in s3_dests),
                     "Expected backup of original acquisition.json",
                 )
                 self.assertTrue(
-                    any(
-                        d.endswith("/acquisition.json")
-                        for d in s3_dests
-                    ),
+                    any(d.endswith("/acquisition.json") for d in s3_dests),
                     "Expected upload of upgraded acquisition.json",
                 )
 
@@ -400,7 +389,6 @@ class TestUpgradeMetadata(unittest.TestCase):
                 for call in mock_upload.call_args_list:
                     s3_dest = call[0][1]
                     self.assertNotIn("//", s3_dest.replace("s3://", ""))
-
 
     @patch(
         "aind_exaspim_data_transformation.upgrade_metadata"
@@ -598,7 +586,6 @@ class TestUpgradeMetadataRealUpgrader(unittest.TestCase):
                     f"which is below 2.0.0",
                 )
 
-
     @patch(
         "aind_exaspim_data_transformation.upgrade_metadata"
         "._upload_bytes_to_s3"
@@ -614,6 +601,7 @@ class TestUpgradeMetadataRealUpgrader(unittest.TestCase):
             source_dir.mkdir(parents=True)
 
             import shutil
+
             shutil.copy(self.EXAMPLE_ACQ, dataset_dir / "acquisition.json")
 
             upgrade_metadata(

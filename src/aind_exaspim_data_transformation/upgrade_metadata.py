@@ -79,7 +79,9 @@ def _upload_bytes_to_s3(body: bytes, s3_uri: str) -> None:
     """Upload raw bytes to an S3 URI using boto3."""
     bucket, key = _parse_s3_uri(s3_uri)
     s3 = boto3.client("s3")
-    s3.put_object(Bucket=bucket, Key=key, Body=body, ContentType="application/json")
+    s3.put_object(
+        Bucket=bucket, Key=key, Body=body, ContentType="application/json"
+    )
     logger.info("Uploaded %d bytes → %s", len(body), s3_uri)
 
 
