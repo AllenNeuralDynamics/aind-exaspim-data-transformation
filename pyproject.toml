@@ -22,7 +22,7 @@ dependencies = [
     "h5py>=3.0.0",
     "hdf5plugin>=4.0.0",
     "numpy>=1.20.0",
-    "zarr>=2.13.0,<2.18.0",
+    "zarr>=2.13.0,<3.2.0",
     "ome-zarr>=0.8.0",
     "numcodecs==0.15.1",
     "aind-data-transformation>=0.1.0",
