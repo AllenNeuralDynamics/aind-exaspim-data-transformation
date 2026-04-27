@@ -113,6 +113,221 @@ def _to_json_dict(data: Any) -> dict | None:
     return data
 
 
+def _sanitize_instrument_manufacturers(inst_data: dict) -> dict:
+    """Replace unrecognised manufacturer names with ``"Other"``.
+
+    ``aind-metadata-upgrader``'s ``repair_manufacturer()`` calls
+    ``Organization.from_name()`` and assumes the result is non-None.
+    When a manufacturer name (e.g. ``"PhotonGear"``) is not in the
+    ``aind-data-schema-models`` registry the upgrader crashes with
+    ``AttributeError: 'NoneType' object has no attribute 'model_dump'``.
+
+    This pre-processing step walks every device collection that
+    contains a ``manufacturer`` dict and replaces unrecognised names
+    with ``"Other"``, preserving the original name in the ``notes``
+    field so no information is lost.
+    """
+    from aind_data_schema_models.organizations import Organization
+
+    # All top-level device-list keys in a v1 instrument.json that
+    # carry a ``manufacturer`` field.
+    _DEVICE_LISTS = (
+        "objectives",
+        "detectors",
+        "light_sources",
+        "fluorescence_filters",
+        "lenses",
+        "scanning_stages",
+        "motorized_stages",
+        "additional_devices",
+        "daqs",
+        "optical_tables",
+    )
+
+    inst = json.loads(json.dumps(inst_data))  # deep copy
+
+    for key in _DEVICE_LISTS:
+        for device in inst.get(key) or []:
+            mfr = device.get("manufacturer")
+            if not isinstance(mfr, dict):
+                continue
+            name = mfr.get("name", "")
+            if name and Organization.from_name(name) is None:
+                logger.warning(
+                    "Manufacturer %r not recognised by "
+                    "aind-data-schema-models — replacing with 'Other' "
+                    "in %s[%s]",
+                    name,
+                    key,
+                    device.get("name", "?"),
+                )
+                original_note = (
+                    f"(v1v2 pre-process): original manufacturer was "
+                    f"'{name}'"
+                )
+                existing_notes = device.get("notes") or ""
+                device["notes"] = (
+                    f"{existing_notes} {original_note}".strip()
+                    if existing_notes
+                    else original_note
+                )
+                mfr["name"] = "Other"
+
+    # ── Back-fill missing required fields on objectives ─────────────
+    # The v2 Objective model requires ``magnification``.  Some v1
+    # instrument files omit it for non-imaging objectives (e.g.
+    # excitation objectives).  The upgrader's ``upgrade_objective()``
+    # does not handle this, so we inject a safe default here.
+    for objective in inst.get("objectives") or []:
+        if "magnification" not in objective or objective["magnification"] is None:
+            logger.warning(
+                "Objective %r missing 'magnification' — defaulting to 1.0",
+                objective.get("name", "?"),
+            )
+            note = "(v1v2 pre-process): magnification was missing, defaulted to 1.0"
+            existing = objective.get("notes") or ""
+            objective["notes"] = (
+                f"{existing} {note}".strip() if existing else note
+            )
+            objective["magnification"] = 1.0
+
+    # ── Back-fill center_wavelength on multiband filters ────────────
+    # The upgrader's ``upgrade_filter_multiband()`` raises
+    # ``ValueError`` when a Multiband filter has
+    # ``center_wavelength: None`` and the model name isn't in its
+    # hard-coded ``FILTER_WAVELENGTH_MAP``.  We parse wavelengths from
+    # the model string (e.g. ``ZET405/488/561/620m`` → [405, 488, 561,
+    # 620]) so the upgrader can proceed.
+    import re as _re
+
+    for filt in inst.get("fluorescence_filters") or []:
+        if (
+            filt.get("filter_type") == "Multiband"
+            and not filt.get("center_wavelength")
+        ):
+            model = filt.get("model", "")
+            wavelengths = [int(m) for m in _re.findall(r"\d{3}", model)]
+            if wavelengths:
+                logger.warning(
+                    "Multiband filter %r (model %r) has no "
+                    "center_wavelength — parsed %s from model name",
+                    filt.get("name", "?"),
+                    model,
+                    wavelengths,
+                )
+                filt["center_wavelength"] = wavelengths
+            else:
+                logger.warning(
+                    "Multiband filter %r (model %r) has no "
+                    "center_wavelength and wavelengths could not be "
+                    "parsed from the model name — upgrade may fail",
+                    filt.get("name", "?"),
+                    model,
+                )
+
+    # ── Strip deprecated fields from motorized stages ─────────────
+    # The v2 ``MotorizedStage`` model forbids extra inputs.  Some v1
+    # instrument files carry ``stage_axis_direction`` and
+    # ``stage_axis_name`` on motorised stages — these are only valid
+    # on ``ScanningStage`` in v2.  The upgrader's
+    # ``upgrade_motorized_stages()`` doesn't strip them, so we do it
+    # here, preserving the information in ``notes``.
+    #
+    # Additionally, v1 used ``travel_unit: "degree"`` for rotation
+    # stages but v2 only accepts linear units.  We remap to
+    # ``millimeter`` and note the original value.
+    _DEPRECATED_MOTORIZED_FIELDS = ("stage_axis_direction", "stage_axis_name")
+    _VALID_TRAVEL_UNITS = {
+        "meter", "centimeter", "millimeter", "micrometer",
+        "nanometer", "inch", "pixel",
+    }
+    for stage in inst.get("motorized_stages") or []:
+        removed = {}
+        for field in _DEPRECATED_MOTORIZED_FIELDS:
+            if field in stage:
+                removed[field] = stage.pop(field)
+        if removed:
+            logger.warning(
+                "Removed deprecated fields %s from motorized_stages[%s]",
+                list(removed.keys()),
+                stage.get("name", "?"),
+            )
+            note_parts = [
+                f"(v1v2 pre-process): removed {k}={v!r}"
+                for k, v in removed.items()
+            ]
+            existing = stage.get("notes") or ""
+            stage["notes"] = (
+                f"{existing} {'; '.join(note_parts)}".strip()
+                if existing
+                else "; ".join(note_parts)
+            )
+
+        # Fix invalid travel_unit
+        tu = stage.get("travel_unit")
+        if tu and tu not in _VALID_TRAVEL_UNITS:
+            logger.warning(
+                "Stage %r has invalid travel_unit %r — "
+                "remapping to 'millimeter'",
+                stage.get("name", "?"),
+                tu,
+            )
+            note = f"(v1v2 pre-process): original travel_unit was '{tu}'"
+            existing = stage.get("notes") or ""
+            stage["notes"] = (
+                f"{existing} {note}".strip() if existing else note
+            )
+            stage["travel_unit"] = "millimeter"
+
+    # ── Normalise stage_axis_direction on scanning stages ───────────
+    # v2 ``ScanningStage`` requires ``stage_axis_direction`` to be one
+    # of the ``StageAxisDirection`` enum values.  v1 files often have
+    # free-form strings like ``"Detection Z axis. Tiger Z axis."``.
+    _VALID_AXIS_DIRECTIONS = {
+        "Detection axis", "Illumination axis", "Perpendicular axis",
+    }
+    _AXIS_DIRECTION_MAP = {
+        "detection": "Detection axis",
+        "illumination": "Illumination axis",
+        "perpendicular": "Perpendicular axis",
+    }
+    for stage in inst.get("scanning_stages") or []:
+        sad = stage.get("stage_axis_direction", "")
+        if sad and sad not in _VALID_AXIS_DIRECTIONS:
+            mapped = None
+            sad_lower = sad.lower()
+            for keyword, canonical in _AXIS_DIRECTION_MAP.items():
+                if keyword in sad_lower:
+                    mapped = canonical
+                    break
+            if mapped:
+                logger.warning(
+                    "Scanning stage %r: remapping stage_axis_direction "
+                    "%r → %r",
+                    stage.get("name", "?"),
+                    sad,
+                    mapped,
+                )
+                note = (
+                    f"(v1v2 pre-process): original "
+                    f"stage_axis_direction was '{sad}'"
+                )
+                existing = stage.get("notes") or ""
+                stage["notes"] = (
+                    f"{existing} {note}".strip() if existing else note
+                )
+                stage["stage_axis_direction"] = mapped
+            else:
+                logger.warning(
+                    "Scanning stage %r: unknown stage_axis_direction "
+                    "%r — defaulting to 'Detection axis'",
+                    stage.get("name", "?"),
+                    sad,
+                )
+                stage["stage_axis_direction"] = "Detection axis"
+    return inst
+
+
 def _upgrade_with_instrument(
     acq_data: dict, inst_data: dict
 ) -> tuple[dict, dict | None]:
@@ -122,7 +337,8 @@ def _upgrade_with_instrument(
     """
     from aind_metadata_upgrader.upgrade import Upgrade
 
-    record: dict = {"acquisition": acq_data, "instrument": inst_data}
+    sanitized_inst = _sanitize_instrument_manufacturers(inst_data)
+    record: dict = {"acquisition": acq_data, "instrument": sanitized_inst}
     upgraded = Upgrade(record, skip_metadata_validation=True)
 
     upgraded_acq = _to_json_dict(upgraded.metadata.acquisition)
