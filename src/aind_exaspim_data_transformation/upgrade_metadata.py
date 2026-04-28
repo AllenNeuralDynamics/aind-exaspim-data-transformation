@@ -93,6 +93,22 @@ def _upload_bytes_to_s3(body: bytes, s3_uri: str) -> None:
     logger.info("Uploaded %d bytes → %s", len(body), s3_uri)
 
 
+def _s3_object_exists(s3_uri: str) -> bool:
+    """Return True if an object exists at *s3_uri*, False otherwise.
+
+    Uses a lightweight ``head_object`` call.  Any error (permissions,
+    network, etc.) is treated as "not found" so the caller can safely
+    fall through to a fetch-from-source path.
+    """
+    try:
+        bucket, key = _parse_s3_uri(s3_uri)
+        s3 = boto3.client("s3")
+        s3.head_object(Bucket=bucket, Key=key)
+        return True
+    except Exception:
+        return False
+
+
 def _backup_original_to_s3(
     local_path: Path, s3_location: str, filename: str
 ) -> None:
@@ -510,6 +526,8 @@ def get_additional_metadata(
 
     for filename, url in endpoints.items():
         local_path = metadata_dir / filename
+
+        # 1. Skip if the file already exists on the local filesystem.
         if local_path.exists():
             logger.info(
                 "%s already exists at %s — skipping download.",
@@ -518,6 +536,20 @@ def get_additional_metadata(
             )
             continue
 
+        # 2. Skip if the file was already placed in S3 by the Airflow
+        #    gather_preliminary_metadata step.
+        if not dry_run:
+            s3_dest = f"{s3_location.rstrip('/')}/{filename}"
+            if _s3_object_exists(s3_dest):
+                logger.info(
+                    "%s already exists in S3 at %s "
+                    "(placed by gather_preliminary_metadata) — skipping.",
+                    filename,
+                    s3_dest,
+                )
+                continue
+
+        # 3. Fallback: fetch from aind-metadata-service directly.
         try:
             response = requests.get(url, timeout=30)
             if response.status_code in (200, 400):
