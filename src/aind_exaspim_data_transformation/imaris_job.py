@@ -25,7 +25,10 @@ from aind_exaspim_data_transformation.models import (
     CompressorName,
     ImarisJobSettings,
 )
-from aind_exaspim_data_transformation.upgrade_metadata import upgrade_metadata
+from aind_exaspim_data_transformation.upgrade_metadata import (
+    get_additional_metadata,
+    upgrade_metadata,
+)
 from aind_exaspim_data_transformation.utils import utils
 from aind_exaspim_data_transformation.utils.io_utils import ImarisReader
 
@@ -533,6 +536,50 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
         dataset_root_path = str(Path(parsed.path.rstrip("/")).parent)
         return f"s3://{parsed.netloc}{dataset_root_path}"
 
+    def _get_additional_metadata(self):
+        """Fetch subject.json and procedures.json from the metadata service.
+
+        Only runs when ``s3_location`` is configured.  Errors are logged
+        but do **not** abort the compression pipeline.
+        """
+        if self.job_settings.s3_location is None:
+            logging.info(
+                "No s3_location configured — skipping metadata fetch."
+            )
+            return
+
+        s3_dataset_root = self._get_dataset_root_s3(
+            self.job_settings.s3_location
+        )
+
+        logging.info(
+            "Fetching additional metadata for source_dir=%s, "
+            "s3_location=%s (dataset root: %s)",
+            self.job_settings.input_source,
+            self.job_settings.s3_location,
+            s3_dataset_root,
+        )
+        try:
+            get_additional_metadata(
+                source_dir=str(self.job_settings.input_source),
+                s3_location=s3_dataset_root,
+                dry_run=False,
+            )
+            logging.info("Additional metadata fetch completed successfully.")
+        except (
+            OSError,
+            ValueError,
+            RuntimeError,
+            ClientError,
+            BotoCoreError,
+        ) as exc:
+            logging.error(
+                "METADATA FETCH FAILED — continuing with compression. "
+                "Error: %s",
+                exc,
+                exc_info=True,
+            )
+
     def _upgrade_metadata(self):
         """Upgrade v1 metadata files and upload to S3.
 
@@ -822,6 +869,7 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
             self.job_settings.partition_to_process,
         )
         if self.job_settings.partition_to_process == 0:
+            self._get_additional_metadata()
             self._upgrade_metadata()
             self._upload_derivatives_folder()
 

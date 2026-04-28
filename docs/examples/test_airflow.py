@@ -85,46 +85,6 @@ def _derive_subject_id(path: str) -> str:
         )
     return basename
 
-def get_additional_metadata(subject_id: str, data_directory: str): 
-    labtracks_id = subject_id.split("-")[0]
-
-    # Download subject and procedures from metadata service
-    metadata_service_url = "http://aind-metadata-service/"  # for prod
-    # metadata_service_url = "http://aind-metadata-service-dev"  # for testing
-    metadata_files = [os.path.basename(x) for x in glob(f"{data_directory}/*.json")]
-
-    # Create empty subject.json if metadata service fails or for testing
-    if "subject.json" not in metadata_files:
-        try:
-            subject_response = requests.get(
-                f"{metadata_service_url}/api/v2/subject/{labtracks_id}"
-            )
-            if subject_response.status_code in [200, 400]:
-                json_data = subject_response.json()
-                with open(f"{data_directory}/subject.json", "w") as f:
-                    json.dump(json_data, f, indent=3)
-            else:
-                subject_response.raise_for_status()
-        except Exception as e:
-            print(f"Failed to get subject from metadata service: {e}")
-            print("Creating empty subject.json file...")
-
-    # Create empty procedures.json if metadata service fails or for testing
-    if "procedures.json" not in metadata_files:
-        try:
-            procedures_response = requests.get(
-                f"{metadata_service_url}/api/v2/procedures/{labtracks_id}"
-            )
-            if procedures_response.status_code in [200, 400]:
-                json_data = procedures_response.json()
-                with open(f"{data_directory}/procedures.json", "w") as f:
-                    json.dump(json_data, f, indent=3)
-            else:
-                procedures_response.raise_for_status()
-        except Exception as e:
-            print(f"Failed to get procedures from metadata service: {e}")
-            print("Creating empty procedures.json file...")
-
 
 def submit_exaspim_job(
     source: str,
@@ -150,15 +110,12 @@ def submit_exaspim_job(
     -----
     Metadata upgrade (v1 → v2.5+) is handled automatically inside the
     SLURM job by ``imaris_job.py`` (worker 0), which has the required
-    S3 write permissions.
+    S3 write permissions.  Subject and procedures metadata are also
+    fetched from ``aind-metadata-service`` by worker 0 (see
+    ``upgrade_metadata.get_additional_metadata``).
     """
     if subject_id is None:
         subject_id = _derive_subject_id(source)
-
-    # Fetch subject.json and procedures.json from the metadata service
-    # into the dataset root (one level up from the exaSPIM/ source dir).
-    # data_directory = os.path.dirname(os.path.normpath(source))
-    # get_additional_metadata(subject_id, data_directory)
 
     acq_datetime = _parse_acq_datetime(source)
     ims_files = _discover_ims_files(source)
