@@ -8,9 +8,12 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from aind_exaspim_data_transformation.upgrade_metadata import (
+    _derive_subject_id,
     _load_metadata_file,
     _needs_upgrade,
+    _s3_object_exists,
     _write_json_to_tempfile,
+    get_additional_metadata,
     upgrade_metadata,
 )
 
@@ -537,6 +540,272 @@ class TestUpgradeMetadataRealUpgrader(unittest.TestCase):
                     f"{uploaded.get('schema_version')} "
                     f"which is below 2.0.0",
                 )
+
+
+class TestDeriveSubjectId(unittest.TestCase):
+    """Tests for _derive_subject_id helper."""
+
+    def test_exaspim_path(self):
+        """Subject ID is the second underscore-delimited segment."""
+        path = "/allen/aind/stage/exaSPIM/exaSPIM_765830_2025-11-21_12-01-47/exaSPIM"
+        self.assertEqual(_derive_subject_id(path), "765830")
+
+    def test_non_exaspim_path(self):
+        """Fallback: first underscore-delimited segment."""
+        path = "/data/my_dataset_2025-01-01/SPIM"
+        self.assertEqual(_derive_subject_id(path), "my")
+
+    def test_no_underscores(self):
+        """No underscores returns the full folder name."""
+        path = "/data/singlename/exaSPIM"
+        self.assertEqual(_derive_subject_id(path), "singlename")
+
+    def test_exaspim_uppercase_variant(self):
+        """ExaSPIM in folder name triggers second-segment extraction."""
+        path = "/data/ExaSPIM_123456_2026-04-28/exaSPIM"
+        self.assertEqual(_derive_subject_id(path), "123456")
+
+
+@patch("aind_exaspim_data_transformation.upgrade_metadata._s3_object_exists")
+@patch("aind_exaspim_data_transformation.upgrade_metadata._upload_bytes_to_s3")
+class TestGetAdditionalMetadata(unittest.TestCase):
+    """Tests for get_additional_metadata."""
+
+    @patch("aind_exaspim_data_transformation.upgrade_metadata.requests.get")
+    def test_fetches_and_uploads_both_files(
+        self, mock_get, mock_upload, mock_s3_exists
+    ):
+        """Happy path: not local, not in S3 → fetch and upload."""
+        mock_s3_exists.return_value = False
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"name": "test_subject"}
+        mock_get.return_value = mock_response
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dataset_dir = Path(tmpdir) / "exaSPIM_765830_2025-11-21"
+            source_dir = dataset_dir / "exaSPIM"
+            source_dir.mkdir(parents=True)
+
+            get_additional_metadata(
+                str(source_dir),
+                "s3://test-bucket/test-dataset",
+            )
+
+            self.assertEqual(mock_get.call_count, 2)
+            # Two files uploaded to S3
+            self.assertEqual(mock_upload.call_count, 2)
+            # Both files written locally
+            self.assertTrue((dataset_dir / "subject.json").exists())
+            self.assertTrue((dataset_dir / "procedures.json").exists())
+
+    @patch("aind_exaspim_data_transformation.upgrade_metadata.requests.get")
+    def test_skips_existing_local_files(
+        self, mock_get, mock_upload, mock_s3_exists
+    ):
+        """Files already present locally are not re-fetched."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dataset_dir = Path(tmpdir) / "exaSPIM_765830_2025-11-21"
+            source_dir = dataset_dir / "exaSPIM"
+            source_dir.mkdir(parents=True)
+
+            # Pre-create both files
+            (dataset_dir / "subject.json").write_text("{}")
+            (dataset_dir / "procedures.json").write_text("{}")
+
+            get_additional_metadata(
+                str(source_dir),
+                "s3://test-bucket/test-dataset",
+            )
+
+            mock_get.assert_not_called()
+            mock_upload.assert_not_called()
+            # S3 check not even reached when local file exists
+            mock_s3_exists.assert_not_called()
+
+    @patch("aind_exaspim_data_transformation.upgrade_metadata.requests.get")
+    def test_skips_when_already_in_s3(
+        self, mock_get, mock_upload, mock_s3_exists
+    ):
+        """Files placed in S3 by gather_preliminary_metadata are not re-fetched."""
+        mock_s3_exists.return_value = True
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dataset_dir = Path(tmpdir) / "exaSPIM_765830_2025-11-21"
+            source_dir = dataset_dir / "exaSPIM"
+            source_dir.mkdir(parents=True)
+
+            get_additional_metadata(
+                str(source_dir),
+                "s3://test-bucket/test-dataset",
+            )
+
+            # S3 was checked for both files
+            self.assertEqual(mock_s3_exists.call_count, 2)
+            # No HTTP fetch, no upload
+            mock_get.assert_not_called()
+            mock_upload.assert_not_called()
+
+    @patch("aind_exaspim_data_transformation.upgrade_metadata.requests.get")
+    def test_s3_check_failure_falls_through_to_fetch(
+        self, mock_get, mock_upload, mock_s3_exists
+    ):
+        """If S3 check fails (e.g., permissions), fall through to fetch."""
+        mock_s3_exists.return_value = False  # treated as not found
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"name": "test_subject"}
+        mock_get.return_value = mock_response
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dataset_dir = Path(tmpdir) / "exaSPIM_765830_2025-11-21"
+            source_dir = dataset_dir / "exaSPIM"
+            source_dir.mkdir(parents=True)
+
+            get_additional_metadata(
+                str(source_dir),
+                "s3://test-bucket/test-dataset",
+            )
+
+            # Falls through to fetch
+            self.assertEqual(mock_get.call_count, 2)
+            self.assertEqual(mock_upload.call_count, 2)
+
+    @patch("aind_exaspim_data_transformation.upgrade_metadata.requests.get")
+    def test_http_error_does_not_raise(
+        self, mock_get, mock_upload, mock_s3_exists
+    ):
+        """HTTP errors are logged but do not crash."""
+        mock_s3_exists.return_value = False
+        mock_response = MagicMock()
+        mock_response.status_code = 500
+        mock_get.return_value = mock_response
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dataset_dir = Path(tmpdir) / "exaSPIM_765830_2025-11-21"
+            source_dir = dataset_dir / "exaSPIM"
+            source_dir.mkdir(parents=True)
+
+            # Should not raise
+            get_additional_metadata(
+                str(source_dir),
+                "s3://test-bucket/test-dataset",
+            )
+
+            mock_upload.assert_not_called()
+
+    @patch("aind_exaspim_data_transformation.upgrade_metadata.requests.get")
+    def test_network_exception_does_not_raise(
+        self, mock_get, mock_upload, mock_s3_exists
+    ):
+        """Network errors are caught and logged."""
+        import requests
+
+        mock_s3_exists.return_value = False
+        mock_get.side_effect = requests.ConnectionError("timeout")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dataset_dir = Path(tmpdir) / "exaSPIM_765830_2025-11-21"
+            source_dir = dataset_dir / "exaSPIM"
+            source_dir.mkdir(parents=True)
+
+            # Should not raise
+            get_additional_metadata(
+                str(source_dir),
+                "s3://test-bucket/test-dataset",
+            )
+
+            mock_upload.assert_not_called()
+
+    @patch("aind_exaspim_data_transformation.upgrade_metadata.requests.get")
+    def test_dry_run_skips_s3_check_and_upload(
+        self, mock_get, mock_upload, mock_s3_exists
+    ):
+        """dry_run=True skips S3 check, writes locally, no upload."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"name": "test_subject"}
+        mock_get.return_value = mock_response
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dataset_dir = Path(tmpdir) / "exaSPIM_765830_2025-11-21"
+            source_dir = dataset_dir / "exaSPIM"
+            source_dir.mkdir(parents=True)
+
+            get_additional_metadata(
+                str(source_dir),
+                "s3://test-bucket/test-dataset",
+                dry_run=True,
+            )
+
+            # Files written locally
+            self.assertTrue((dataset_dir / "subject.json").exists())
+            self.assertTrue((dataset_dir / "procedures.json").exists())
+            # No S3 check or upload in dry_run
+            mock_s3_exists.assert_not_called()
+            mock_upload.assert_not_called()
+
+    @patch("aind_exaspim_data_transformation.upgrade_metadata.requests.get")
+    def test_status_400_still_writes(
+        self, mock_get, mock_upload, mock_s3_exists
+    ):
+        """HTTP 400 is treated as a valid response (writes the JSON body)."""
+        mock_s3_exists.return_value = False
+        mock_response = MagicMock()
+        mock_response.status_code = 400
+        mock_response.json.return_value = {"message": "not found"}
+        mock_get.return_value = mock_response
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dataset_dir = Path(tmpdir) / "exaSPIM_765830_2025-11-21"
+            source_dir = dataset_dir / "exaSPIM"
+            source_dir.mkdir(parents=True)
+
+            get_additional_metadata(
+                str(source_dir),
+                "s3://test-bucket/test-dataset",
+            )
+
+            self.assertEqual(mock_upload.call_count, 2)
+            self.assertTrue((dataset_dir / "subject.json").exists())
+
+
+class TestS3ObjectExists(unittest.TestCase):
+    """Tests for _s3_object_exists helper."""
+
+    @patch("aind_exaspim_data_transformation.upgrade_metadata.boto3.client")
+    def test_returns_true_when_object_exists(self, mock_boto):
+        mock_s3 = MagicMock()
+        mock_boto.return_value = mock_s3
+        self.assertTrue(
+            _s3_object_exists("s3://bucket/key/subject.json")
+        )
+        mock_s3.head_object.assert_called_once_with(
+            Bucket="bucket", Key="key/subject.json"
+        )
+
+    @patch("aind_exaspim_data_transformation.upgrade_metadata.boto3.client")
+    def test_returns_false_on_client_error(self, mock_boto):
+        from botocore.exceptions import ClientError
+
+        mock_s3 = MagicMock()
+        mock_s3.head_object.side_effect = ClientError(
+            {"Error": {"Code": "404", "Message": "Not Found"}},
+            "HeadObject",
+        )
+        mock_boto.return_value = mock_s3
+        self.assertFalse(
+            _s3_object_exists("s3://bucket/key/subject.json")
+        )
+
+    @patch("aind_exaspim_data_transformation.upgrade_metadata.boto3.client")
+    def test_returns_false_on_any_exception(self, mock_boto):
+        mock_s3 = MagicMock()
+        mock_s3.head_object.side_effect = Exception("network error")
+        mock_boto.return_value = mock_s3
+        self.assertFalse(
+            _s3_object_exists("s3://bucket/key/subject.json")
+        )
 
 
 if __name__ == "__main__":

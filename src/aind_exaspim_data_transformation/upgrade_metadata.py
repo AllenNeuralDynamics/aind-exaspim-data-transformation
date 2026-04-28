@@ -23,6 +23,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import boto3
+import requests
 from packaging import version
 
 from aind_exaspim_data_transformation.utils import utils
@@ -35,6 +36,13 @@ _METADATA_FILES = ("acquisition.json", "instrument.json")
 
 # Schema version threshold — anything below this gets upgraded
 _V2_THRESHOLD = "2.0.0"
+
+# Metadata service URL (prod)
+# For dev/testing use: "http://aind-metadata-service-dev"
+_METADATA_SERVICE_URL = "http://aind-metadata-service"
+
+# Additional metadata files fetched from the metadata service
+_ADDITIONAL_METADATA_FILES = ("subject.json", "procedures.json")
 
 
 def _load_metadata_file(path: Path) -> dict | None:
@@ -83,6 +91,22 @@ def _upload_bytes_to_s3(body: bytes, s3_uri: str) -> None:
         Bucket=bucket, Key=key, Body=body, ContentType="application/json"
     )
     logger.info("Uploaded %d bytes → %s", len(body), s3_uri)
+
+
+def _s3_object_exists(s3_uri: str) -> bool:
+    """Return True if an object exists at *s3_uri*, False otherwise.
+
+    Uses a lightweight ``head_object`` call.  Any error (permissions,
+    network, etc.) is treated as "not found" so the caller can safely
+    fall through to a fetch-from-source path.
+    """
+    try:
+        bucket, key = _parse_s3_uri(s3_uri)
+        s3 = boto3.client("s3")
+        s3.head_object(Bucket=bucket, Key=key)
+        return True
+    except Exception:
+        return False
 
 
 def _backup_original_to_s3(
@@ -444,6 +468,122 @@ def _upload_upgraded_outputs(
         "Upgraded instrument.json to schema_version %s",
         upgraded_inst.get("schema_version"),
     )
+
+
+def _derive_subject_id(source_dir: str) -> str:
+    """Best-effort subject ID from the dataset folder name.
+
+    The dataset root is one level above *source_dir* (the modality
+    subfolder).  For a path like ``…/exaSPIM_765830_2025-11-21_12-01-47/exaSPIM``,
+    the dataset folder is ``exaSPIM_765830_2025-11-21_12-01-47`` and the
+    returned subject ID is ``765830``.
+    """
+    dataset_dir = Path(source_dir).resolve().parent
+    basename = dataset_dir.name
+    if "_" in basename:
+        # exaSPIM_765830_… → 765830   (second segment)
+        # other_format_…   → other    (first segment)
+        parts = basename.split("_")
+        return parts[1] if "ExaSPIM" in basename or "exaSPIM" in basename else parts[0]
+    return basename
+
+
+def get_additional_metadata(
+    source_dir: str, s3_location: str, dry_run: bool = False
+) -> None:
+    """Fetch subject.json and procedures.json from aind-metadata-service.
+
+    Downloads metadata files that are not already present in the local
+    dataset directory and uploads them to the S3 dataset root.  Errors
+    are logged but do **not** abort the pipeline.
+
+    Parameters
+    ----------
+    source_dir : str
+        Path to the modality subfolder (e.g. ``…/exaSPIM``).
+        Metadata is read from / written to ``Path(source_dir).parent``.
+    s3_location : str
+        S3 URI of the dataset root.
+    dry_run : bool
+        If True, skip S3 uploads (useful for local testing).
+    """
+    metadata_dir = Path(source_dir).parent
+    subject_id = _derive_subject_id(source_dir)
+    labtracks_id = subject_id.split("-")[0]
+
+    logger.info(
+        "Fetching additional metadata for subject_id=%s "
+        "(labtracks_id=%s) from %s",
+        subject_id,
+        labtracks_id,
+        _METADATA_SERVICE_URL,
+    )
+
+    endpoints = {
+        "subject.json": f"{_METADATA_SERVICE_URL}/api/v2/subject/{labtracks_id}",
+        "procedures.json": f"{_METADATA_SERVICE_URL}/api/v2/procedures/{labtracks_id}",
+    }
+
+    for filename, url in endpoints.items():
+        local_path = metadata_dir / filename
+
+        # 1. Skip if the file already exists on the local filesystem.
+        if local_path.exists():
+            logger.info(
+                "%s already exists at %s — skipping download.",
+                filename,
+                local_path,
+            )
+            continue
+
+        # 2. Skip if the file was already placed in S3 by the Airflow
+        #    gather_preliminary_metadata step.
+        if not dry_run:
+            s3_dest = f"{s3_location.rstrip('/')}/{filename}"
+            if _s3_object_exists(s3_dest):
+                logger.info(
+                    "%s already exists in S3 at %s "
+                    "(placed by gather_preliminary_metadata) — skipping.",
+                    filename,
+                    s3_dest,
+                )
+                continue
+
+        # 3. Fallback: fetch from aind-metadata-service directly.
+        try:
+            response = requests.get(url, timeout=30)
+            if response.status_code in (200, 400):
+                json_data = response.json()
+                body = json.dumps(json_data, indent=3).encode("utf-8")
+
+                # Write locally so other steps can see it
+                local_path.write_bytes(body)
+                logger.info("Wrote %s to %s", filename, local_path)
+
+                # Upload to S3
+                if dry_run:
+                    logger.info(
+                        "[DRY RUN] Would upload %s → %s/%s",
+                        filename,
+                        s3_location.rstrip("/"),
+                        filename,
+                    )
+                else:
+                    s3_dest = f"{s3_location.rstrip('/')}/{filename}"
+                    _upload_bytes_to_s3(body, s3_dest)
+            else:
+                logger.warning(
+                    "Metadata service returned HTTP %s for %s — skipping.",
+                    response.status_code,
+                    url,
+                )
+        except Exception as exc:
+            logger.error(
+                "Failed to fetch %s from metadata service: %s",
+                filename,
+                exc,
+                exc_info=True,
+            )
 
 
 def upgrade_metadata(
