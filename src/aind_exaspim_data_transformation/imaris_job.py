@@ -1,5 +1,6 @@
 """Module to handle zeiss data compression"""
 
+import json
 import logging
 import multiprocessing
 import os
@@ -10,6 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple, cast
 from urllib.parse import urlparse
 
 from aind_data_transformation.core import GenericEtl, JobResponse, get_parser
+from botocore.exceptions import BotoCoreError, ClientError
 from packaging import version
 
 from aind_exaspim_data_transformation.compress.imaris_to_zarr import (
@@ -22,6 +24,10 @@ from aind_exaspim_data_transformation.compress.imaris_to_zarr import (
 from aind_exaspim_data_transformation.models import (
     CompressorName,
     ImarisJobSettings,
+)
+from aind_exaspim_data_transformation.upgrade_metadata import (
+    get_additional_metadata,
+    upgrade_metadata,
 )
 from aind_exaspim_data_transformation.utils import utils
 from aind_exaspim_data_transformation.utils.io_utils import ImarisReader
@@ -508,6 +514,123 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
                     bucket_name=bucket_name,
                 )
 
+    @staticmethod
+    def _get_dataset_root_s3(s3_location: str) -> str:
+        """Strip the modality subfolder from an S3 location URI.
+
+        The pipeline passes ``s3_location`` as
+        ``s3://{bucket}/{dataset_name}/{modality}`` (e.g. ``…/SPIM``).
+        Metadata files must be written to the dataset root, one level up.
+
+        Parameters
+        ----------
+        s3_location : str
+            Full S3 URI that may include a trailing modality segment.
+
+        Returns
+        -------
+        str
+            S3 URI pointing to the dataset root (modality segment removed).
+        """
+        parsed = urlparse(s3_location)
+        dataset_root_path = str(Path(parsed.path.rstrip("/")).parent)
+        return f"s3://{parsed.netloc}{dataset_root_path}"
+
+    def _get_additional_metadata(self):
+        """Fetch subject.json and procedures.json from the metadata service.
+
+        Only runs when ``s3_location`` is configured.  Errors are logged
+        but do **not** abort the compression pipeline.
+        """
+        if self.job_settings.s3_location is None:
+            logging.info(
+                "No s3_location configured — skipping metadata fetch."
+            )
+            return
+
+        s3_dataset_root = self._get_dataset_root_s3(
+            self.job_settings.s3_location
+        )
+
+        logging.info(
+            "Fetching additional metadata for source_dir=%s, "
+            "s3_location=%s (dataset root: %s)",
+            self.job_settings.input_source,
+            self.job_settings.s3_location,
+            s3_dataset_root,
+        )
+        try:
+            get_additional_metadata(
+                source_dir=str(self.job_settings.input_source),
+                s3_location=s3_dataset_root,
+                dry_run=False,
+            )
+            logging.info("Additional metadata fetch completed successfully.")
+        except (
+            OSError,
+            ValueError,
+            RuntimeError,
+            ClientError,
+            BotoCoreError,
+        ) as exc:
+            logging.error(
+                "METADATA FETCH FAILED — continuing with compression. "
+                "Error: %s",
+                exc,
+                exc_info=True,
+            )
+
+    def _upgrade_metadata(self):
+        """Upgrade v1 metadata files and upload to S3.
+
+        Only runs when ``s3_location`` is configured.  Errors are logged
+        but do **not** abort the compression pipeline.
+
+        The pipeline provides ``s3_location`` with a modality subfolder
+        (e.g. ``s3://bucket/dataset/SPIM``).  Metadata files belong at
+        the dataset root, so the modality segment is stripped before
+        calling :func:`upgrade_metadata`.
+        """
+        if self.job_settings.s3_location is None:
+            logging.info(
+                "No s3_location configured — skipping metadata upgrade."
+            )
+            return
+
+        # s3_location includes the modality subfolder (e.g. .../SPIM).
+        # Metadata files must go to the dataset root (one level up).
+        s3_dataset_root = self._get_dataset_root_s3(
+            self.job_settings.s3_location
+        )
+
+        logging.info(
+            "Starting metadata upgrade for source_dir=%s, "
+            "s3_location=%s (dataset root: %s)",
+            self.job_settings.input_source,
+            self.job_settings.s3_location,
+            s3_dataset_root,
+        )
+        try:
+            upgrade_metadata(
+                source_dir=str(self.job_settings.input_source),
+                s3_location=s3_dataset_root,
+                dry_run=False,
+            )
+            logging.info("Metadata upgrade completed successfully.")
+        except (
+            OSError,
+            ValueError,
+            RuntimeError,
+            ClientError,
+            BotoCoreError,
+        ) as exc:
+            logging.error(
+                "METADATA UPGRADE FAILED — continuing with compression. "
+                "Error: %s",
+                exc,
+                exc_info=True,
+            )
+
     def _upload_derivatives_folder(self):
         """
         Uploads the 'derivatives' folder if it exists in the input source.
@@ -529,8 +652,22 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
             logging.info(
                 f"Uploading {derivatives_path} to {s3_derivatives_dir}"
             )
-            utils.sync_dir_to_s3(derivatives_path, s3_derivatives_dir)
-            logging.info(f"{derivatives_path} uploaded to s3.")
+            try:
+                utils.sync_dir_to_s3(derivatives_path, s3_derivatives_dir)
+                logging.info(f"{derivatives_path} uploaded to s3.")
+            except (
+                OSError,
+                ValueError,
+                RuntimeError,
+                ClientError,
+                BotoCoreError,
+            ) as exc:
+                logging.error(
+                    "DERIVATIVES UPLOAD FAILED — continuing with "
+                    "compression. Error: %s",
+                    exc,
+                    exc_info=True,
+                )
 
     def _build_global_shard_task_list(
         self, stack_paths: List[Path]
@@ -720,8 +857,20 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
         """Main entrypoint to run the job."""
         job_start_time = time()
 
-        # Upload derivatives folder (only from partition 0)
+        # Worker 0 handles one-time setup: metadata upgrade + derivatives
+        logging.info(
+            "Running partition %s of %s",
+            self.job_settings.partition_to_process,
+            self.job_settings.num_of_partitions,
+        )
+        logging.info(
+            "partition_to_process type=%s value=%r",
+            type(self.job_settings.partition_to_process).__name__,
+            self.job_settings.partition_to_process,
+        )
         if self.job_settings.partition_to_process == 0:
+            self._get_additional_metadata()
+            self._upgrade_metadata()
             self._upload_derivatives_folder()
 
         if self.job_settings.partition_mode == "shard":
@@ -757,11 +906,12 @@ def job_entrypoint(sys_args: list):
     parser = get_parser()
     cli_args = parser.parse_args(sys_args)
     if cli_args.job_settings is not None:
-        job_settings = ImarisJobSettings.model_validate_json(
-            cli_args.job_settings
-        )
+        job_settings_json = json.loads(cli_args.job_settings)
+        job_settings = ImarisJobSettings(**job_settings_json)
     elif cli_args.config_file is not None:
-        job_settings = ImarisJobSettings.from_config_file(cli_args.config_file)
+        with open(cli_args.config_file, "r", encoding="utf-8") as f:
+            file_contents = json.load(f)
+        job_settings = ImarisJobSettings(**file_contents)
     else:
         # Construct settings from env vars or defaults (backwards compatible)
         job_settings = ImarisJobSettings()  # type: ignore[call-arg]

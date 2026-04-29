@@ -15,6 +15,7 @@ import os
 import re
 from datetime import datetime
 from glob import glob
+import json
 
 import requests
 from aind_data_schema_models.modalities import Modality
@@ -29,19 +30,11 @@ from aind_data_transfer_service.models.core import (
 
 # ── Configurable defaults ──────────────────────────────────────────
 IMAGE = "ghcr.io/allenneuraldynamics/aind-exaspim-data-transformation"
-IMAGE_VERSION = "dev-e057957"
+IMAGE_VERSION = "dev-a867744"
 ENDPOINT = "http://aind-data-transfer-service-dev"
 S3_BUCKET = "open"  # maps to aind-open-data-dev
-JOB_TYPE = "default"  # registered job type on the dev cluster
-
-# Resource limits
+JOB_TYPE = "exaSPIM"  # registered job type on the dev cluster
 MAX_PARTITIONS = 64
-CPUS_PER_NODE = 4
-MIN_RAM_MB = 24_000
-MAX_RAM_MB = 50_000
-SCHEDULING_OVERHEAD_MB = 1_300  # per tile, from profiling
-PROCESSING_OVERHEAD_MB = 4_400  # per shard, from profiling
-BUFFER_MB = 1_000
 PROCESSING_SPEED_MB_PER_HOUR = 12_200
 # ────────────────────────────────────────────────────────────────────
 
@@ -55,36 +48,15 @@ def _discover_ims_files(source: str) -> list[str]:
 
 
 def _first_file_size_mb(ims_files: list[str]) -> float:
-    """Size of the first .ims file in MB (used for resource estimation)."""
+    """Size of the first .ims file in MB (used for timeout estimation)."""
     return os.path.getsize(ims_files[0]) / (1024 * 1024)
 
 
-def _estimate_resources(
-    n_tiles: int, tile_size_mb: float
-) -> tuple[int, int, int]:
-    """Return (num_partitions, memory_per_cpu_mb, timeout_minutes)."""
-    # num_partitions = min(n_tiles, MAX_PARTITIONS)
-    # tiles_per_partition = max(n_tiles // num_partitions, 1)
-    # we want to run multiple partitions per file
-    num_partitions = MAX_PARTITIONS
-
-    # estimated_mem = (
-    #     tiles_per_partition * SCHEDULING_OVERHEAD_MB
-    #     + PROCESSING_OVERHEAD_MB
-    #     + BUFFER_MB
-    # ) // CPUS_PER_NODE
-    estimated_mem = (
-        MIN_RAM_MB // CPUS_PER_NODE
-    )  # from profiling, seems to need at least this much per CPU regardless of tile size
-
-    memory_per_cpu = min(
-        max(estimated_mem, MIN_RAM_MB // CPUS_PER_NODE),
-        MAX_RAM_MB // CPUS_PER_NODE,
+def _estimate_timeout(n_tiles: int, tile_size_mb: float) -> int:
+    """Return estimated timeout in minutes based on data volume."""
+    return int(
+        (n_tiles * tile_size_mb / 1024) / PROCESSING_SPEED_MB_PER_HOUR + 60
     )
-
-    timeout_min = int(24 * 60)
-
-    return num_partitions, memory_per_cpu, timeout_min
 
 
 def _parse_acq_datetime(path: str) -> datetime:
@@ -133,6 +105,14 @@ def submit_exaspim_job(
     single_tile_upload : bool
         If True, only process the first tile for integration testing.
         Default is False (process all tiles).
+
+    Notes
+    -----
+    Metadata upgrade (v1 → v2.5+) is handled automatically inside the
+    SLURM job by ``imaris_job.py`` (worker 0), which has the required
+    S3 write permissions.  Subject and procedures metadata are also
+    fetched from ``aind-metadata-service`` by worker 0 (see
+    ``upgrade_metadata.get_additional_metadata``).
     """
     if subject_id is None:
         subject_id = _derive_subject_id(source)
@@ -141,60 +121,33 @@ def submit_exaspim_job(
     ims_files = _discover_ims_files(source)
     n_tiles = len(ims_files)
     tile_size_mb = _first_file_size_mb(ims_files)
-    num_partitions, mem_mb, timeout_min = _estimate_resources(
-        n_tiles, tile_size_mb
-    )
+    num_partitions = MAX_PARTITIONS
+    timeout_min = _estimate_timeout(n_tiles, tile_size_mb)
 
     print(f"Tiles found       : {n_tiles}")
     print(f"First tile size   : {tile_size_mb:,.0f} MB")
     print(f"Partitions        : {num_partitions}")
-    print(f"Memory / CPU      : {mem_mb:,} MB")
     print(f"Timeout           : {timeout_min} min")
     if single_tile_upload:
         print(f"Single tile mode  : ENABLED (testing first tile only)")
 
+    # Only per-job overrides; image, resources, command_script, and most
+    # job_settings are provided by the "exaSPIM" job type on the server.
     exaspim_job_settings = {
         "input_source": source,
-        "output_directory": "%OUTPUT_LOCATION",
-        "s3_location": "%S3_LOCATION",
         "num_of_partitions": num_partitions,
-        "use_tensorstore": True,
-        "translate_imaris_pyramid": True,
-        "partition_mode": "shard",
-        "dask_workers": CPUS_PER_NODE,  # use all CPUs for distributed processing
+        "dask_workers": 4,
         "single_tile_upload": single_tile_upload,
     }
 
     custom_exaspim_task = Task(
-        skip_task=False,
         image=IMAGE,
         image_version=IMAGE_VERSION,
         image_resources={
-            "partition": "aind",
-            "qos": "dev",
             "array": f"0-{num_partitions - 1}",
             "time_limit": {"set": True, "number": timeout_min},
-            "memory_per_cpu": {"set": True, "number": mem_mb},
-            "minimum_cpus_per_node": CPUS_PER_NODE,
-            "standard_error": "/allen/aind/scratch/svc_aind_airflow/dev/logs/%x_%j_error.out",
-            "tasks": 1,
-            "standard_output": "/allen/aind/scratch/svc_aind_airflow/dev/logs/%x_%j.out",
-            "environment": [
-                "PATH=/bin:/usr/bin/:/usr/local/bin/",
-                "LD_LIBRARY_PATH=/lib/:/lib64/:/usr/local/lib",
-            ],
-            "maximum_nodes": 1,
-            "minimum_nodes": 1,
-            "current_working_directory": ".",
-            "comment": "retry 2",
         },
         job_settings=exaspim_job_settings,
-        command_script=(
-            "#!/bin/bash \nexport "
-            "SINGULARITYENV_TRANSFORMATION_JOB_PARTITION_TO_PROCESS=$SLURM_ARRAY_TASK_ID"
-            " \nsingularity exec --cleanenv --env-file %ENV_FILE docker://%IMAGE:%IMAGE_VERSION "
-            "python -m aind_exaspim_data_transformation.imaris_job --job-settings ' %JOB_SETTINGS '"
-        ),
     )
 
     upload_job = UploadJobConfigsV2(
@@ -214,7 +167,7 @@ def submit_exaspim_job(
             "check_s3_folder_exists": {"skip_task": True},
             "final_check_s3_folder_exist": {"skip_task": True},
             "check_metadata_files": {"skip_task": True},
-            "gather_preliminary_metadata": {"skip_task": True},
+            "gather_preliminary_metadata": {"skip_task": False},
             "register_data_asset": {"skip_task": True},
             "get_codeocean_asset_id": {"skip_task": True},
             "run_codeocean_pipeline": {"skip_task": True},
@@ -236,13 +189,13 @@ def submit_exaspim_job(
 
 def test_submit_exaspim_job():
     # dataset_name = "exaSPIM_718162_2026-01-29_19-28-50"
-    dataset_name = "exaSPIM_785688_2026-02-19_08-34-14"
-    data_dir = f"/allen/aind/stage/exaSPIM/" f"{dataset_name}/exaSPIM"
+    dataset_name = "exaSPIM_765830_2025-11-21_12-01-47"
+    data_dir = f"/allen/aind/stage/exaSPIM/{dataset_name}/exaSPIM"
 
     submit_exaspim_job(
         source=data_dir,
         project_name="MSMA Platform",
-        subject_id="785688",
+        subject_id="765830",
         single_tile_upload=False,  # Set to True for testing with a single tile
     )
 
