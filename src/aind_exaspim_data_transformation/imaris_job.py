@@ -25,6 +25,11 @@ from aind_exaspim_data_transformation.models import (
     CompressorName,
     ImarisJobSettings,
 )
+from aind_exaspim_data_transformation.neuroglancer_state import (
+    build_neuroglancer_state,
+    generate_neuroglancer_url,
+    parse_tiles_from_acquisition,
+)
 from aind_exaspim_data_transformation.upgrade_metadata import (
     get_additional_metadata,
     upgrade_metadata,
@@ -631,6 +636,104 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
                 exc_info=True,
             )
 
+    def _generate_neuroglancer_state(self):
+        """Generate and upload a Neuroglancer JSON state file to S3.
+
+        Parses ``acquisition.json`` to extract tile layout and voxel sizes,
+        groups tiles by channel (wavelength), builds a neuroglancer state
+        pointing to the ``zarr3://`` sources on S3, and uploads the result
+        to the dataset root.
+
+        Only runs when ``s3_location`` is configured.  Errors are logged
+        but do **not** abort the compression pipeline.
+        """
+        import boto3
+
+        if self.job_settings.s3_location is None:
+            logging.info(
+                "No s3_location configured — skipping neuroglancer "
+                "state generation."
+            )
+            return
+
+        input_source_path = Path(self.job_settings.input_source)
+        acquisition_path = input_source_path.parent.joinpath(
+            "acquisition.json"
+        )
+
+        if not acquisition_path.is_file():
+            logging.warning(
+                "acquisition.json not found at %s — cannot generate "
+                "neuroglancer state.",
+                acquisition_path,
+            )
+            return
+
+        try:
+            acquisition_config = utils.read_json_as_dict(acquisition_path)
+            tiles_by_channel, voxel_sizes_um = parse_tiles_from_acquisition(
+                acquisition_config
+            )
+
+            if not tiles_by_channel:
+                logging.warning(
+                    "No tiles found in acquisition.json — skipping "
+                    "neuroglancer state generation."
+                )
+                return
+
+            state = build_neuroglancer_state(
+                tiles_by_channel=tiles_by_channel,
+                voxel_sizes_um=voxel_sizes_um,
+                s3_modality_path=self.job_settings.s3_location,
+            )
+
+            # Upload to S3 dataset root
+            s3_dataset_root = self._get_dataset_root_s3(
+                self.job_settings.s3_location
+            )
+            parsed = urlparse(s3_dataset_root)
+            bucket = parsed.netloc
+            key = (
+                parsed.path.lstrip("/").rstrip("/")
+                + "/"
+                + self.job_settings.neuroglancer_json_filename
+            )
+
+            s3_client = boto3.client("s3")
+            state_json = json.dumps(state, indent=2)
+            s3_client.put_object(
+                Bucket=bucket,
+                Key=key,
+                Body=state_json.encode("utf-8"),
+                ContentType="application/json",
+            )
+
+            s3_json_uri = f"s3://{bucket}/{key}"
+            viewer_url = generate_neuroglancer_url(
+                s3_json_uri=s3_json_uri,
+                viewer_url=self.job_settings.neuroglancer_viewer_url,
+            )
+
+            logging.info(
+                "Neuroglancer state uploaded to %s", s3_json_uri
+            )
+            logging.info("Neuroglancer viewer URL: %s", viewer_url)
+
+        except (
+            OSError,
+            ValueError,
+            RuntimeError,
+            ClientError,
+            BotoCoreError,
+        ) as exc:
+            logging.error(
+                "NEUROGLANCER STATE GENERATION FAILED — continuing with "
+                "compression. Error: %s",
+                exc,
+                exc_info=True,
+            )
+
     def _upload_derivatives_folder(self):
         """
         Uploads the 'derivatives' folder if it exists in the input source.
@@ -871,6 +974,7 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
         if self.job_settings.partition_to_process == 0:
             self._get_additional_metadata()
             self._upgrade_metadata()
+            self._generate_neuroglancer_state()
             self._upload_derivatives_folder()
 
         if self.job_settings.partition_mode == "shard":

@@ -142,6 +142,23 @@ class ImarisJobSettings(BasicJobSettings):
         title="Single Tile Upload Mode",
     )
 
+    neuroglancer_json_filename: str = Field(
+        default="neuroglancer.json",
+        description=(
+            "Filename for the generated Neuroglancer state JSON file. "
+            "Uploaded to the S3 dataset root alongside other metadata files."
+        ),
+        title="Neuroglancer JSON Filename",
+    )
+    neuroglancer_viewer_url: str = Field(
+        default="https://neuroglancer-demo.appspot.com",
+        description=(
+            "Base URL of the Neuroglancer web viewer instance. "
+            "Used to construct the clickable viewer link."
+        ),
+        title="Neuroglancer Viewer URL",
+    )
+
     @model_validator(mode="after")
     def _validate_partition_index(self) -> "ImarisJobSettings":
         """Ensure partition_to_process is within [0, num_of_partitions)."""
