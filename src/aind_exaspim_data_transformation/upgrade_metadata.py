@@ -352,6 +352,53 @@ def _sanitize_instrument_manufacturers(inst_data: dict) -> dict:
     return inst
 
 
+def _coerce_instrument_id(
+    acq_data: dict, inst_data: dict
+) -> dict:
+    """Ensure ``acq_data["instrument_id"]`` is non-empty before upgrade.
+
+    aind-data-schema >= 2.8 enforces that ``Acquisition.instrument_id``
+    must be a non-empty string whenever ``data_streams`` is populated.
+    v1 acquisition.json files often carry an empty string or the literal
+    ``"None"`` for ``instrument_id``; in those cases we fall back to the
+    instrument file's ``instrument_id`` so the upstream ``Upgrade()``
+    validator sees a usable value.
+
+    Returns a shallow copy of ``acq_data`` with ``instrument_id`` filled
+    in when possible. If neither side has a usable value, the original
+    (empty) value is preserved and ``Upgrade()`` will surface the
+    validation error -- this is the desired behaviour so the caller
+    knows the upgrade is incomplete.
+    """
+    acq = dict(acq_data)
+    current = acq.get("instrument_id")
+    if isinstance(current, str) and current.strip() and current != "None":
+        return acq
+
+    fallback = inst_data.get("instrument_id") if inst_data else None
+    if (
+        isinstance(fallback, str)
+        and fallback.strip()
+        and fallback != "None"
+    ):
+        logger.info(
+            "Pre-seeding acquisition.instrument_id=%r from instrument.json "
+            "(acquisition had %r).",
+            fallback,
+            current,
+        )
+        acq["instrument_id"] = fallback
+    else:
+        logger.warning(
+            "Cannot pre-seed acquisition.instrument_id: acquisition has "
+            "%r and instrument has %r. Upgrade may fail validation under "
+            "aind-data-schema >= 2.8.",
+            current,
+            fallback,
+        )
+    return acq
+
+
 def _upgrade_with_instrument(
     acq_data: dict, inst_data: dict
 ) -> tuple[dict, dict | None]:
@@ -362,7 +409,8 @@ def _upgrade_with_instrument(
     from aind_metadata_upgrader.upgrade import Upgrade
 
     sanitized_inst = _sanitize_instrument_manufacturers(inst_data)
-    record: dict = {"acquisition": acq_data, "instrument": sanitized_inst}
+    seeded_acq = _coerce_instrument_id(acq_data, sanitized_inst)
+    record: dict = {"acquisition": seeded_acq, "instrument": sanitized_inst}
     upgraded = Upgrade(record, skip_metadata_validation=True)
 
     upgraded_acq = _to_json_dict(upgraded.metadata.acquisition)

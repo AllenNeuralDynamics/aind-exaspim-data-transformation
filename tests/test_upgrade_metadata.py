@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from aind_exaspim_data_transformation.upgrade_metadata import (
+    _coerce_instrument_id,
     _derive_subject_id,
     _load_metadata_file,
     _needs_upgrade,
@@ -94,6 +95,45 @@ class TestWriteJsonToTempfile(unittest.TestCase):
 EXAMPLE_V1_ACQ = Path(__file__).resolve().parent.parent / (
     "docs/examples/acquisition.json"
 )
+
+
+class TestCoerceInstrumentId(unittest.TestCase):
+    """Tests for _coerce_instrument_id helper."""
+
+    def test_keeps_existing_value(self):
+        """A non-empty acquisition instrument_id is preserved as-is."""
+        acq = {"instrument_id": "exaSPIM-01", "data_streams": []}
+        inst = {"instrument_id": "other-id"}
+        out = _coerce_instrument_id(acq, inst)
+        self.assertEqual(out["instrument_id"], "exaSPIM-01")
+
+    def test_falls_back_to_instrument_when_empty(self):
+        """Empty acquisition instrument_id is replaced from instrument."""
+        acq = {"instrument_id": "", "data_streams": []}
+        inst = {"instrument_id": "exaSPIM-01"}
+        out = _coerce_instrument_id(acq, inst)
+        self.assertEqual(out["instrument_id"], "exaSPIM-01")
+
+    def test_falls_back_when_literal_none_string(self):
+        """The literal string 'None' is treated as missing."""
+        acq = {"instrument_id": "None", "data_streams": []}
+        inst = {"instrument_id": "exaSPIM-01"}
+        out = _coerce_instrument_id(acq, inst)
+        self.assertEqual(out["instrument_id"], "exaSPIM-01")
+
+    def test_returns_original_when_neither_set(self):
+        """If both sides are empty the value is left unchanged."""
+        acq = {"instrument_id": "", "data_streams": []}
+        inst: dict = {"instrument_id": ""}
+        out = _coerce_instrument_id(acq, inst)
+        self.assertEqual(out["instrument_id"], "")
+
+    def test_does_not_mutate_input(self):
+        """The original acquisition dict must not be modified in place."""
+        acq = {"instrument_id": "", "data_streams": []}
+        inst = {"instrument_id": "exaSPIM-01"}
+        _coerce_instrument_id(acq, inst)
+        self.assertEqual(acq["instrument_id"], "")
 
 
 class TestUpgradeMetadata(unittest.TestCase):
