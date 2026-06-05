@@ -237,6 +237,339 @@ class TestImarisCompressionJob(unittest.TestCase):
         self.assertEqual(result, [2.0, 1.0, 1.0])
         mock_reader.get_voxel_size.assert_called_once()
 
+    @patch(
+        "aind_exaspim_data_transformation.imaris_job.utils.read_json_as_dict"
+    )
+    def test_get_tile_voxel_resolution_schema_1(self, mock_read_json):
+        """Per-tile schema v1 lookup returns the matching tile's scale."""
+        mock_acq_path = MagicMock()
+        mock_acq_path.is_file.return_value = True
+
+        mock_read_json.return_value = {
+            "schema_version": "1.0.0",
+            "tiles": [
+                {
+                    "file_name": "tile_000000_ch_488.ims",
+                    "coordinate_transformations": [
+                        {"type": "scale", "scale": [0.5, 0.5, 1.0]}
+                    ],
+                },
+                {
+                    "file_name": "tile_000001_ch_561.ims",
+                    "coordinate_transformations": [
+                        {"type": "scale", "scale": [0.75, 0.75, 2.0]}
+                    ],
+                },
+            ],
+        }
+
+        result_488 = (
+            ImarisCompressionJob._get_tile_voxel_resolution_from_acquisition(
+                mock_acq_path, "tile_000000_ch_488.ims"
+            )
+        )
+        result_561 = (
+            ImarisCompressionJob._get_tile_voxel_resolution_from_acquisition(
+                mock_acq_path, "tile_000001_ch_561.ims"
+            )
+        )
+
+        # acquisition.json: [X, Y, Z] -> return as [Z, Y, X]
+        self.assertEqual(result_488, [1.0, 0.5, 0.5])
+        self.assertEqual(result_561, [2.0, 0.75, 0.75])
+
+    @patch(
+        "aind_exaspim_data_transformation.imaris_job.utils.read_json_as_dict"
+    )
+    def test_get_tile_voxel_resolution_schema_2(self, mock_read_json):
+        """Per-tile schema v2 lookup walks data_streams.configurations."""
+        mock_acq_path = MagicMock()
+        mock_acq_path.is_file.return_value = True
+
+        mock_read_json.return_value = {
+            "schema_version": "2.0.0",
+            "data_streams": [
+                {
+                    "configurations": [
+                        {
+                            "images": [
+                                {
+                                    "file_name": "tile_000000_ch_488.ims",
+                                    "image_to_acquisition_transform": [
+                                        {
+                                            "object_type": "Scale",
+                                            "scale": [0.5, 0.5, 1.0],
+                                        }
+                                    ],
+                                },
+                                {
+                                    "file_name": "tile_000001_ch_561.ims",
+                                    "image_to_acquisition_transform": [
+                                        {
+                                            "object_type": "Scale",
+                                            "scale": [0.75, 0.75, 2.0],
+                                        }
+                                    ],
+                                },
+                            ]
+                        }
+                    ]
+                }
+            ],
+        }
+
+        result_488 = (
+            ImarisCompressionJob._get_tile_voxel_resolution_from_acquisition(
+                mock_acq_path, "tile_000000_ch_488.ims"
+            )
+        )
+        result_561 = (
+            ImarisCompressionJob._get_tile_voxel_resolution_from_acquisition(
+                mock_acq_path, "tile_000001_ch_561.ims"
+            )
+        )
+
+        self.assertEqual(result_488, [1.0, 0.5, 0.5])
+        self.assertEqual(result_561, [2.0, 0.75, 0.75])
+
+    @patch(
+        "aind_exaspim_data_transformation.imaris_job.utils.read_json_as_dict"
+    )
+    def test_get_tile_voxel_resolution_unknown_tile_returns_none(
+        self, mock_read_json
+    ):
+        """Unknown filename returns None instead of raising."""
+        mock_acq_path = MagicMock()
+        mock_acq_path.is_file.return_value = True
+
+        mock_read_json.return_value = {
+            "schema_version": "1.0.0",
+            "tiles": [
+                {
+                    "file_name": "tile_000000_ch_488.ims",
+                    "coordinate_transformations": [
+                        {"type": "scale", "scale": [0.5, 0.5, 1.0]}
+                    ],
+                }
+            ],
+        }
+
+        result = (
+            ImarisCompressionJob._get_tile_voxel_resolution_from_acquisition(
+                mock_acq_path, "tile_does_not_exist.ims"
+            )
+        )
+
+        self.assertIsNone(result)
+
+    @patch(
+        "aind_exaspim_data_transformation.imaris_job.utils.read_json_as_dict"
+    )
+    def test_get_tile_voxel_resolution_no_scale_transform_returns_none(
+        self, mock_read_json
+    ):
+        """Matched tile with no scale transform returns None."""
+        mock_acq_path = MagicMock()
+        mock_acq_path.is_file.return_value = True
+
+        mock_read_json.return_value = {
+            "schema_version": "1.0.0",
+            "tiles": [
+                {
+                    "file_name": "tile_000000_ch_488.ims",
+                    "coordinate_transformations": [
+                        {"type": "translation", "translation": [0, 0, 0]}
+                    ],
+                }
+            ],
+        }
+
+        result = (
+            ImarisCompressionJob._get_tile_voxel_resolution_from_acquisition(
+                mock_acq_path, "tile_000000_ch_488.ims"
+            )
+        )
+
+        self.assertIsNone(result)
+
+    def test_get_tile_voxel_resolution_missing_file_returns_none(self):
+        """Missing acquisition.json returns None (no exception)."""
+        mock_acq_path = MagicMock()
+        mock_acq_path.is_file.return_value = False
+
+        result = (
+            ImarisCompressionJob._get_tile_voxel_resolution_from_acquisition(
+                mock_acq_path, "anything.ims"
+            )
+        )
+
+        self.assertIsNone(result)
+
+    @patch(
+        "aind_exaspim_data_transformation.imaris_job.utils.read_json_as_dict"
+    )
+    def test_get_tile_voxel_resolution_parse_error_returns_none(
+        self, mock_read_json
+    ):
+        """A read/parse error is swallowed and returns None."""
+        mock_acq_path = MagicMock()
+        mock_acq_path.is_file.return_value = True
+        mock_read_json.side_effect = ValueError("bad json")
+
+        result = (
+            ImarisCompressionJob._get_tile_voxel_resolution_from_acquisition(
+                mock_acq_path, "anything.ims"
+            )
+        )
+
+        self.assertIsNone(result)
+
+    @patch(
+        "aind_exaspim_data_transformation.imaris_job.imaris_to_zarr_distributed"
+    )
+    @patch("aind_exaspim_data_transformation.imaris_job.Path")
+    def test_write_stacks_per_tile_resolution_distinct_per_channel(
+        self, mock_path_cls, mock_distributed_writer
+    ):
+        """Two stacks with different per-tile scales produce two distinct
+        ``voxel_size`` kwargs passed to the writer (regression test for
+        the shared-resolution bug)."""
+        settings = ImarisJobSettings(
+            input_source="/fake/input",
+            output_directory="/fake/output",
+            num_of_partitions=1,
+            partition_to_process=0,
+            use_tensorstore=True,
+            translate_imaris_pyramid=False,
+        )
+        job = ImarisCompressionJob(job_settings=settings)
+
+        mock_stack1 = MagicMock()
+        mock_stack1.stem = "tile_000000_ch_488"
+        mock_stack1.name = "tile_000000_ch_488.ims"
+        mock_stack1.__str__ = lambda x: "/fake/input/tile_000000_ch_488.ims"
+
+        mock_stack2 = MagicMock()
+        mock_stack2.stem = "tile_000001_ch_561"
+        mock_stack2.name = "tile_000001_ch_561.ims"
+        mock_stack2.__str__ = lambda x: "/fake/input/tile_000001_ch_561.ims"
+
+        mock_acq_path = MagicMock()
+        mock_acq_path.exists.return_value = True
+
+        mock_input_path = MagicMock()
+        mock_input_path.joinpath.return_value = mock_acq_path
+
+        mock_output_path = MagicMock()
+
+        def path_side_effect(arg):
+            if arg == "/fake/input":
+                return mock_input_path
+            elif arg == "/fake/output":
+                return mock_output_path
+            return MagicMock()
+
+        mock_path_cls.side_effect = path_side_effect
+
+        # Different per-tile voxel resolutions, plus a (different)
+        # dataset-level value so we can assert per-tile wins.
+        def per_tile_lookup(_acq_path, tile_name):
+            return {
+                "tile_000000_ch_488.ims": [1.0, 0.5, 0.5],
+                "tile_000001_ch_561.ims": [2.0, 0.75, 0.75],
+            }[tile_name]
+
+        with patch.object(
+            ImarisCompressionJob,
+            "_get_tile_voxel_resolution_from_acquisition",
+            side_effect=per_tile_lookup,
+        ):
+            with patch.object(
+                ImarisCompressionJob,
+                "_get_voxel_resolution",
+                return_value=[9.0, 9.0, 9.0],
+            ):
+                with patch.object(
+                    ImarisCompressionJob,
+                    "_get_tile_translation_from_acquisition",
+                    return_value=None,
+                ):
+                    job._write_stacks([mock_stack1, mock_stack2])
+
+        self.assertEqual(mock_distributed_writer.call_count, 2)
+        call_kwargs = [c.kwargs for c in mock_distributed_writer.call_args_list]
+        # Map each call to its stack and check distinct voxel sizes
+        by_path = {kw["imaris_path"]: kw["voxel_size"] for kw in call_kwargs}
+        self.assertEqual(
+            by_path["/fake/input/tile_000000_ch_488.ims"], [1.0, 0.5, 0.5]
+        )
+        self.assertEqual(
+            by_path["/fake/input/tile_000001_ch_561.ims"], [2.0, 0.75, 0.75]
+        )
+
+    @patch(
+        "aind_exaspim_data_transformation.imaris_job.imaris_to_zarr_distributed"
+    )
+    @patch("aind_exaspim_data_transformation.imaris_job.Path")
+    def test_write_stacks_falls_back_to_dataset_resolution(
+        self, mock_path_cls, mock_distributed_writer
+    ):
+        """When per-tile lookup returns None, dataset-level value is used."""
+        settings = ImarisJobSettings(
+            input_source="/fake/input",
+            output_directory="/fake/output",
+            num_of_partitions=1,
+            partition_to_process=0,
+            use_tensorstore=True,
+            translate_imaris_pyramid=False,
+        )
+        job = ImarisCompressionJob(job_settings=settings)
+
+        mock_stack1 = MagicMock()
+        mock_stack1.stem = "stack1"
+        mock_stack1.name = "stack1.ims"
+        mock_stack1.__str__ = lambda x: "/fake/input/stack1.ims"
+
+        mock_acq_path = MagicMock()
+        mock_acq_path.exists.return_value = True
+
+        mock_input_path = MagicMock()
+        mock_input_path.joinpath.return_value = mock_acq_path
+
+        mock_output_path = MagicMock()
+
+        def path_side_effect(arg):
+            if arg == "/fake/input":
+                return mock_input_path
+            elif arg == "/fake/output":
+                return mock_output_path
+            return MagicMock()
+
+        mock_path_cls.side_effect = path_side_effect
+
+        with patch.object(
+            ImarisCompressionJob,
+            "_get_tile_voxel_resolution_from_acquisition",
+            return_value=None,
+        ):
+            with patch.object(
+                ImarisCompressionJob,
+                "_get_voxel_resolution",
+                return_value=[3.0, 0.25, 0.25],
+            ):
+                with patch.object(
+                    ImarisCompressionJob,
+                    "_get_tile_translation_from_acquisition",
+                    return_value=None,
+                ):
+                    job._write_stacks([mock_stack1])
+
+        mock_distributed_writer.assert_called_once()
+        self.assertEqual(
+            mock_distributed_writer.call_args.kwargs["voxel_size"],
+            [3.0, 0.25, 0.25],
+        )
+
     def test_get_compressor_blosc(self):
         """Test _get_compressor returns compressor kwargs for BLOSC"""
         job = ImarisCompressionJob(job_settings=self.test_settings)
