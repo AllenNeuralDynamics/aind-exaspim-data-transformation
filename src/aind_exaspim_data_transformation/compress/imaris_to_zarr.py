@@ -687,23 +687,27 @@ def create_downsample_levels(
     cpu_cnt: Optional[int] = None,
     aws_region: str = "us-west-2",
     bucket_name: Optional[str] = None,
+    start_scale: int = 0,
 ) -> List[Tuple[int, ...]]:
     """
-    Generate all downsampled pyramid levels for a dataset.
+    Generate downsampled pyramid levels for a dataset.
 
     This function orchestrates the creation of a multi-resolution pyramid
-    by sequentially generating each level from the previous one. Level 0
-    (base resolution) must already exist in the dataset.
+    by sequentially generating each level from the previous one. The base
+    level at ``start_scale`` must already exist in the dataset.
 
     Parameters
     ----------
     dataset_path : str
-        Base path to the zarr store containing level 0.
+        Base path to the zarr store containing the base level.
     base_shape : Tuple[int, ...]
-        Shape of the base resolution level (5D: T, C, Z, Y, X).
+        Shape of the base level at ``start_scale`` (5D: T, C, Z, Y, X).
     n_levels : int
-        Total number of pyramid levels to create (including base).
-        For example, n_levels=5 creates levels 0, 1, 2, 3, 4.
+        Total number of pyramid levels in the chain, including the base
+        level at ``start_scale``. For example, ``n_levels=5`` with
+        ``start_scale=0`` creates levels 1..4 (reading from level 0);
+        with ``start_scale=5`` it creates levels 6..9 (reading from
+        level 5).
     downsample_factor : Tuple[int, int, int]
         Downsample factors for Z, Y, X dimensions (spatial only).
         Typically (2, 2, 2) for isotropic downsampling.
@@ -723,11 +727,20 @@ def create_downsample_levels(
         AWS region for S3 bucket. Default is "us-west-2".
     bucket_name : Optional[str]
         S3 bucket name. If None, operates on local filesystem.
+    start_scale : int
+        Scale index of the existing base level. Defaults to 0, in which
+        case this function behaves as before (creates levels 1..n_levels-1
+        from level 0). Set to ``last_lvl`` to append additional levels
+        after an already-written pyramid (creates levels
+        ``last_lvl + 1 .. last_lvl + n_levels - 1`` from level
+        ``last_lvl``).
 
     Returns
     -------
     List[Tuple[int, ...]]
-        List of shapes for all levels created (including base).
+        Shapes for all levels in the chain, starting with ``base_shape``
+        at index 0 (corresponding to ``start_scale``) and one entry per
+        newly created level after that.
 
     Examples
     --------
@@ -749,7 +762,8 @@ def create_downsample_levels(
 
     Notes
     -----
-    - Level 0 must already exist before calling this function.
+    - The base level at ``start_scale`` must already exist before calling
+      this function.
     - Levels are created sequentially because each level depends on
       the previous one.
     - The function uses asyncio to run the async downsample operations.
@@ -767,16 +781,17 @@ def create_downsample_levels(
 
     logger.info(
         f"Creating {n_levels - 1} downsampled levels with factor "
-        f"{downsample_factor} using '{downsample_mode}' method"
+        f"{downsample_factor} using '{downsample_mode}' method "
+        f"(start_scale={start_scale})"
     )
 
     async def _generate_all_levels():
         """Async helper to generate all levels sequentially."""
         for level_idx in range(n_levels - 1):
-            start_scale = level_idx
+            source_scale = start_scale + level_idx
             new_shape = await create_downsample_dataset(
                 dataset_path=dataset_path,
-                start_scale=start_scale,
+                start_scale=source_scale,
                 downsample_factor=downsample_factor_5d,
                 downsample_mode=downsample_mode,
                 shard_shape=shard_shape,
@@ -794,7 +809,7 @@ def create_downsample_levels(
 
     logger.info(f"Completed creating {n_levels} pyramid levels")
     for i, shape in enumerate(shapes):
-        logger.info(f"  Level {i}: {shape}")
+        logger.info(f"  Level {start_scale + i}: {shape}")
 
     return shapes
 
@@ -1518,6 +1533,7 @@ def imaris_to_zarr_distributed(
     partition_to_process: int = 0,
     num_of_partitions: int = 1,
     origin: Optional[List[float]] = None,
+    additional_levels: int = 0,
 ) -> str:
     """
     Convert an Imaris file to OME-Zarr using distributed shard-per-worker processing.
@@ -1576,6 +1592,12 @@ def imaris_to_zarr_distributed(
         S3 bucket name for cloud storage. If None, writes locally.
     dask_client : Optional[Any]
         Dask distributed client. If None, processes sequentially (useful for testing).
+    additional_levels : int
+        Number of extra pyramid levels to compute by successively
+        downsampling the most-downsampled translated level. Only applied
+        when ``translate_pyramid_levels=True``. Computed by worker 0
+        after the translate-loop finishes, using ``downsample_mode`` and
+        ``scale_factor``. Defaults to 0 (no extra levels).
 
     Returns
     -------
@@ -1626,7 +1648,8 @@ def imaris_to_zarr_distributed(
         "Distributed args: output_path=%s voxel_size=%s chunk_shape=%s shard_shape=%s "
         "n_lvls=%s scale_factor=%s downsample_mode=%s channel_name=%s stack_name=%s "
         "codec=%s codec_level=%s bucket_name=%s dask_client=%s shard_indices=%s "
-        "translate_pyramid_levels=%s partition_to_process=%s num_of_partitions=%s",
+        "translate_pyramid_levels=%s partition_to_process=%s num_of_partitions=%s "
+        "additional_levels=%s",
         output_path,
         voxel_size,
         chunk_shape,
@@ -1644,6 +1667,7 @@ def imaris_to_zarr_distributed(
         translate_pyramid_levels,
         partition_to_process,
         num_of_partitions,
+        additional_levels,
     )
 
     # Set defaults - larger shards for distributed processing
@@ -1975,6 +1999,60 @@ def imaris_to_zarr_distributed(
             else:
                 for task in lvl_tasks:
                     process_single_shard(**task)
+
+        # =====================================================================
+        # Step 4b: Compute extra downsampled levels (if requested)
+        #
+        # After all translate-loop shard writes complete, optionally append
+        # ``additional_levels`` extra levels by successively downsampling
+        # the most-downsampled translated level. This runs only on the
+        # coordinator (worker 0 in SLURM mode, or any dask-client caller),
+        # matching the metadata-write gate below. It assumes the
+        # orchestrator launches the coordinator after the other workers
+        # have finished their shard writes.
+        # =====================================================================
+        coordinator = dask_client is not None or partition_to_process == 0
+        if additional_levels > 0 and coordinator:
+            last_lvl = n_lvls - 1
+            if last_lvl == 0:
+                last_lvl_shape_3d = shape_3d
+            else:
+                _, last_lvl_shape_3d = level_info[last_lvl]
+            last_lvl_shape_5d = (1, 1) + tuple(last_lvl_shape_3d)
+            logger.info(
+                "Step 4b: computing %s additional pyramid levels starting "
+                "from translated level %s (shape=%s)",
+                additional_levels,
+                last_lvl,
+                last_lvl_shape_3d,
+            )
+            logger.debug(
+                "Extra-levels config: scale_factor=%s mode=%s "
+                "shard_shape_5d=%s chunk_shape_5d=%s",
+                scale_factor,
+                downsample_mode,
+                shard_shape_5d,
+                chunk_shape_5d,
+            )
+            create_downsample_levels(
+                dataset_path=dataset_path,
+                base_shape=last_lvl_shape_5d,
+                n_levels=additional_levels + 1,
+                downsample_factor=scale_factor,
+                downsample_mode=downsample_mode,
+                shard_shape=shard_shape_5d,
+                chunk_shape=chunk_shape_5d,
+                codec=codec,
+                codec_level=codec_level,
+                bucket_name=bucket_name,
+                start_scale=last_lvl,
+            )
+        elif additional_levels > 0:
+            logger.info(
+                "Worker %s: skipping extra-levels computation "
+                "(non-coordinator)",
+                partition_to_process,
+            )
     elif n_lvls > 1:
         logger.info(
             "Generating downsampled pyramid levels (compute path): %s levels",
@@ -2007,12 +2085,18 @@ def imaris_to_zarr_distributed(
         dask_client is not None or partition_to_process == 0
     )
 
+    # Metadata advertises all translated + extra computed levels. The
+    # extra computed levels only exist on the translate path (Step 4b).
+    total_lvls = n_lvls + (
+        additional_levels if translate_pyramid_levels else 0
+    )
+
     if should_write_metadata:
         metadata_dict = write_ome_ngff_metadata(
             arr_shape=list(shape_5d),
             chunk_size=list(chunk_shape_5d),
             image_name=channel_name or stack_name,
-            n_lvls=n_lvls,
+            n_lvls=total_lvls,
             scale_factors=scale_factor,
             voxel_size=tuple(voxel_size),
             channel_names=[channel_name or stack_name],
@@ -2020,7 +2104,11 @@ def imaris_to_zarr_distributed(
         )
 
         _write_zarr_metadata(store_path, metadata_dict, is_s3)
-        logger.info(f"Successfully wrote {stack_name} with {n_lvls} levels")
+        logger.info(
+            f"Successfully wrote {stack_name} with {total_lvls} levels "
+            f"({n_lvls} translated + "
+            f"{total_lvls - n_lvls} computed)"
+        )
     else:
         logger.info(
             f"Metadata write skipped for worker {partition_to_process}; "

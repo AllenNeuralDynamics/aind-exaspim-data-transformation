@@ -954,6 +954,9 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
             partition_to_process=self.job_settings.partition_to_process,
             num_of_partitions=self.job_settings.num_of_partitions,
             origin=tile_origin,
+            additional_levels=(
+                self.job_settings.additional_downsample_levels
+            ),
         )
 
     def run_job(self):
