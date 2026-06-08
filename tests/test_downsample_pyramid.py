@@ -576,6 +576,74 @@ class TestCreateDownsampleLevels(unittest.TestCase):
         self.assertEqual(calls[1].kwargs["start_scale"], 1)
         self.assertEqual(calls[2].kwargs["start_scale"], 2)
 
+    @patch(
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr."
+        "create_downsample_dataset"
+    )
+    def test_start_scale_offsets_source_levels(self, mock_create_ds):
+        """Test that start_scale shifts the source/destination scale
+        indices, enabling additional levels to be appended after an
+        existing pyramid."""
+        from aind_exaspim_data_transformation.compress.imaris_to_zarr import (
+            create_downsample_levels,
+        )
+
+        # Simulate 3 extra levels appended after a 6-level translated
+        # pyramid (levels 0..5 already exist; we add 6, 7, 8 from 5).
+        shapes = [
+            (1, 1, 50, 50, 50),
+            (1, 1, 25, 25, 25),
+            (1, 1, 13, 13, 13),
+        ]
+
+        async def mock_downsample(*args, **kwargs):
+            return shapes.pop(0)
+
+        mock_create_ds.side_effect = mock_downsample
+
+        result = create_downsample_levels(
+            dataset_path="/data/test.zarr",
+            base_shape=(1, 1, 100, 100, 100),
+            n_levels=4,  # base + 3 new
+            downsample_factor=(2, 2, 2),
+            downsample_mode="mean",
+            shard_shape=(1, 1, 64, 64, 64),
+            chunk_shape=(1, 1, 32, 32, 32),
+            start_scale=5,
+        )
+
+        # Should call create_downsample_dataset 3 times for the new levels
+        self.assertEqual(mock_create_ds.call_count, 3)
+
+        # start_scale should be 5, 6, 7 (creating dest scales 6, 7, 8)
+        calls = mock_create_ds.call_args_list
+        self.assertEqual(calls[0].kwargs["start_scale"], 5)
+        self.assertEqual(calls[1].kwargs["start_scale"], 6)
+        self.assertEqual(calls[2].kwargs["start_scale"], 7)
+
+        # Result includes base + new shapes
+        self.assertEqual(result[0], (1, 1, 100, 100, 100))
+        self.assertEqual(len(result), 4)
+
+    def test_start_scale_with_single_level_no_op(self):
+        """Test that n_levels=1 is a no-op regardless of start_scale."""
+        from aind_exaspim_data_transformation.compress.imaris_to_zarr import (
+            create_downsample_levels,
+        )
+
+        result = create_downsample_levels(
+            dataset_path="/data/test.zarr",
+            base_shape=(1, 1, 100, 200, 300),
+            n_levels=1,
+            downsample_factor=(2, 2, 2),
+            downsample_mode="mean",
+            shard_shape=(1, 1, 64, 64, 64),
+            chunk_shape=(1, 1, 32, 32, 32),
+            start_scale=5,
+        )
+
+        self.assertEqual(result, [(1, 1, 100, 200, 300)])
+
 
 class TestImarisToZarrParallelNewParams(unittest.TestCase):
     """Test suite for updated imaris_to_zarr_parallel function."""
