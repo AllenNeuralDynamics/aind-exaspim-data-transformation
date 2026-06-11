@@ -1703,6 +1703,30 @@ def imaris_to_zarr_distributed(
 
         logger.debug("Using voxel_size=%s", voxel_size)
 
+        # Per-tile pyramid clamp: different tiles/channels can ship
+        # different numbers of pre-computed Imaris resolution levels, so
+        # cap the requested ``n_lvls`` against what this particular file
+        # actually contains. Mirrors the behavior already in
+        # ``imaris_to_zarr_translate_pyramid`` and
+        # ``imaris_to_zarr_writer``. Each worker re-runs this clamp
+        # deterministically against the same source file, so no extra
+        # scheduling coordination is required.
+        available_levels = reader.n_levels
+        logger.info(
+            f"Imaris file contains {available_levels} resolution levels"
+        )
+        if n_lvls > available_levels:
+            logger.warning(
+                "Requested n_lvls=%s exceeds available Imaris levels=%s "
+                "for %s; clamping to %s",
+                n_lvls,
+                available_levels,
+                imaris_path,
+                available_levels,
+            )
+            n_lvls = available_levels
+        logger.info(f"Will translate {n_lvls} pyramid levels")
+
         base_path = _data_path(0)
         # Use the authoritative metadata shape (no HDF5 chunk-alignment
         # padding) so the zarr array shape matches the true image extent.
