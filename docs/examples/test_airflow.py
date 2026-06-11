@@ -30,12 +30,12 @@ from aind_data_transfer_service.models.core import (
 
 # ── Configurable defaults ──────────────────────────────────────────
 IMAGE = "ghcr.io/allenneuraldynamics/aind-exaspim-data-transformation"
-IMAGE_VERSION = "dev-a867744"
-ENDPOINT = "http://aind-data-transfer-service-dev"
+IMAGE_VERSION = "dev-925f804"
+ENDPOINT = "http://aind-data-transfer-service"
 S3_BUCKET = "open"  # maps to aind-open-data-dev
 JOB_TYPE = "exaSPIM"  # registered job type on the dev cluster
 MAX_PARTITIONS = 64
-PROCESSING_SPEED_MB_PER_HOUR = 12_200
+PROCESSING_SPEED_GB_PER_HOUR = 12_200
 # ────────────────────────────────────────────────────────────────────
 
 
@@ -54,8 +54,10 @@ def _first_file_size_mb(ims_files: list[str]) -> float:
 
 def _estimate_timeout(n_tiles: int, tile_size_mb: float) -> int:
     """Return estimated timeout in minutes based on data volume."""
+    buffer_min = 8*60  # Add 8 hours as a buffer for overhead, variability, etc.
+    variability_factor = 2 # Account for variability in processing speed
     return int(
-        (n_tiles * tile_size_mb / 1024) / PROCESSING_SPEED_MB_PER_HOUR + 60
+        (n_tiles * tile_size_mb / 1024) / (PROCESSING_SPEED_GB_PER_HOUR) * 60 * variability_factor + buffer_min
     )
 
 
@@ -175,7 +177,8 @@ def submit_exaspim_job(
         },
     )
 
-    submit_request = SubmitJobRequestV2(upload_jobs=[upload_job])
+    submit_request = SubmitJobRequestV2(upload_jobs=[upload_job], 
+                                        user_email= "carson.berry@alleninstitute.org",)
     payload = submit_request.model_dump(mode="json", exclude_none=True)
 
     resp = requests.post(
@@ -189,14 +192,14 @@ def submit_exaspim_job(
 
 def test_submit_exaspim_job():
     # dataset_name = "exaSPIM_718162_2026-01-29_19-28-50"
-    dataset_name = "exaSPIM_765830_2025-11-21_12-01-47"
+    dataset_name = "exaSPIM_826507_2026-05-29_16-56-55"
     data_dir = f"/allen/aind/stage/exaSPIM/{dataset_name}/exaSPIM"
 
     submit_exaspim_job(
         source=data_dir,
-        project_name="MSMA Platform",
-        subject_id="765830",
-        single_tile_upload=False,  # Set to True for testing with a single tile
+        project_name="Single Neuron Reconstructions",
+        subject_id="826507",
+        single_tile_upload=True,  # Set to True for testing with a single tile
     )
 
 

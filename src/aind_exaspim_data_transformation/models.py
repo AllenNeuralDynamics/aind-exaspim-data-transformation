@@ -72,7 +72,7 @@ class ImarisJobSettings(BasicJobSettings):
         title="Scale Factors",
     )
     downsample_levels: int = Field(
-        default=5,
+        default=9,
         description="The number of levels of the image pyramid",
         title="Downsample Levels",
     )
