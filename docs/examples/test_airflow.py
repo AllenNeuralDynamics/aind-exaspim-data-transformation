@@ -199,7 +199,7 @@ def test_submit_exaspim_job():
         source=data_dir,
         project_name="Single Neuron Reconstructions",
         subject_id="826507",
-        single_tile_upload=False,  # Set to True for testing with a single tile
+        single_tile_upload=True,  # Set to True for testing with a single tile
     )
 
 
