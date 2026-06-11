@@ -186,40 +186,6 @@ class TestImarisJobSettings(unittest.TestCase):
         settings = ImarisJobSettings.model_validate_json(json_config)
         self.assertTrue(settings.single_tile_upload)
 
-    def test_default_additional_downsample_levels(self):
-        """Test default additional_downsample_levels is 3."""
-        settings = ImarisJobSettings(
-            input_source="/path/to/input",
-            output_directory="/path/to/output",
-            num_of_partitions=1,
-            partition_to_process=0,
-        )
-        self.assertEqual(settings.additional_downsample_levels, 3)
-
-    def test_explicit_additional_downsample_levels(self):
-        """Test additional_downsample_levels can be customized."""
-        settings = ImarisJobSettings(
-            input_source="/path/to/input",
-            output_directory="/path/to/output",
-            num_of_partitions=1,
-            partition_to_process=0,
-            additional_downsample_levels=0,
-        )
-        self.assertEqual(settings.additional_downsample_levels, 0)
-
-    def test_additional_downsample_levels_must_be_non_negative(self):
-        """Test additional_downsample_levels rejects negative values."""
-        from pydantic import ValidationError
-
-        with self.assertRaises(ValidationError):
-            ImarisJobSettings(
-                input_source="/path/to/input",
-                output_directory="/path/to/output",
-                num_of_partitions=1,
-                partition_to_process=0,
-                additional_downsample_levels=-1,
-            )
-
 
 if __name__ == "__main__":
     unittest.main()

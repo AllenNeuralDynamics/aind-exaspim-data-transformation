@@ -106,19 +106,6 @@ class ImarisJobSettings(BasicJobSettings):
         ),
         title="Translate Imaris Pyramid",
     )
-    additional_downsample_levels: int = Field(
-        default=3,
-        ge=0,
-        description=(
-            "Number of extra pyramid levels to compute by successively "
-            "downsampling the most-downsampled translated Imaris level. "
-            "These levels are appended after the translated levels and "
-            "share the existing 'downsample_mode' and 'scale_factor' "
-            "settings. Only applies when use_tensorstore=True and "
-            "translate_imaris_pyramid=True."
-        ),
-        title="Additional Downsample Levels",
-    )
     dask_workers: int = Field(
         default=4,
         description=(
