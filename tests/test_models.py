@@ -77,7 +77,7 @@ class TestImarisJobSettings(unittest.TestCase):
             partition_to_process=0,
         )
 
-        self.assertEqual(settings.downsample_levels, 5)
+        self.assertEqual(settings.downsample_levels, 9)
 
     def test_default_downsample_mode(self):
         """Test default downsample mode"""
