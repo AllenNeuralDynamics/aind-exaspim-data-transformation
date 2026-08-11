@@ -12,6 +12,8 @@ from aind_exaspim_data_transformation.neuroglancer_state import (
     _parse_tiles_schema_v1,
     _parse_tiles_schema_v2,
     build_neuroglancer_state,
+    compute_contrast_limits,
+    compute_contrast_limits_by_channel,
     generate_neuroglancer_url,
     parse_tiles_from_acquisition,
     wavelength_to_hex,
@@ -61,10 +63,12 @@ class TestBuildSourceTransform(unittest.TestCase):
             voxel_sizes_um=[20.0, 15.04, 15.04],
         )
         matrix = result["matrix"]
-        # 3x4 identity with zero translation
-        self.assertEqual(matrix[0], [1, 0, 0, 0.0])
-        self.assertEqual(matrix[1], [0, 1, 0, 0.0])
-        self.assertEqual(matrix[2], [0, 0, 1, 0.0])
+        # 5x6 identity ([t, c, z, y, x]) with zero translation
+        self.assertEqual(matrix[0], [1, 0, 0, 0, 0, 0])  # t
+        self.assertEqual(matrix[1], [0, 1, 0, 0, 0, 0])  # c
+        self.assertEqual(matrix[2], [0, 0, 1, 0, 0, 0.0])  # z
+        self.assertEqual(matrix[3], [0, 0, 0, 1, 0, 0.0])  # y
+        self.assertEqual(matrix[4], [0, 0, 0, 0, 1, 0.0])  # x
 
     def test_nonzero_translation(self):
         # Translation in µm [Z=1000, Y=2000, X=3000]
@@ -75,11 +79,11 @@ class TestBuildSourceTransform(unittest.TestCase):
         )
         matrix = result["matrix"]
         # X translation in voxels: 3000/10 = 300
-        self.assertAlmostEqual(matrix[0][3], 300.0)
+        self.assertAlmostEqual(matrix[4][5], 300.0)
         # Y translation in voxels: 2000/10 = 200
-        self.assertAlmostEqual(matrix[1][3], 200.0)
+        self.assertAlmostEqual(matrix[3][5], 200.0)
         # Z translation in voxels: 1000/20 = 50
-        self.assertAlmostEqual(matrix[2][3], 50.0)
+        self.assertAlmostEqual(matrix[2][5], 50.0)
 
     def test_output_dimensions(self):
         result = _build_source_transform(
@@ -199,6 +203,127 @@ class TestBuildNeuroglancerState(unittest.TestCase):
         # Should not raise
         json_str = json.dumps(state)
         self.assertIsInstance(json_str, str)
+
+    def test_dimensions_include_singleton_t_and_c(self):
+        tiles_by_channel = {
+            488: [{"file_name": "t.ims", "translation_um": [0, 0, 0]}]
+        }
+        state = build_neuroglancer_state(
+            tiles_by_channel=tiles_by_channel,
+            voxel_sizes_um=[20.0, 15.04, 15.04],
+            s3_modality_path="s3://b/d/SPIM",
+        )
+        # t and c must be declared so neuroglancer pins t at 0
+        self.assertEqual(list(state["dimensions"].keys()), ["t", "c", "z", "y", "x"])
+        self.assertEqual(state["dimensions"]["t"], [0.001, "s"])
+        self.assertEqual(state["dimensions"]["c"], [1, ""])
+
+    def test_ng_link_is_first_key(self):
+        tiles_by_channel = {
+            488: [{"file_name": "t.ims", "translation_um": [0, 0, 0]}]
+        }
+        state = build_neuroglancer_state(
+            tiles_by_channel=tiles_by_channel,
+            voxel_sizes_um=[1.0, 1.0, 1.0],
+            s3_modality_path="s3://b/d/SPIM",
+            ng_link="https://viewer/#!x",
+        )
+        self.assertEqual(list(state.keys())[0], "ng_link")
+        self.assertEqual(state["ng_link"], "https://viewer/#!x")
+
+    def test_contrast_limits_applied_to_layers(self):
+        tiles_by_channel = {
+            488: [{"file_name": "t.ims", "translation_um": [0, 0, 0]}]
+        }
+        state = build_neuroglancer_state(
+            tiles_by_channel=tiles_by_channel,
+            voxel_sizes_um=[1.0, 1.0, 1.0],
+            s3_modality_path="s3://b/d/SPIM",
+            contrast_limits_by_channel={488: (12.0, 3400.0)},
+        )
+        rng = state["layers"][0]["shaderControls"]["normalized"]["range"]
+        self.assertEqual(rng, [12.0, 3400.0])
+
+    def test_contrast_limits_default_when_missing(self):
+        tiles_by_channel = {
+            488: [{"file_name": "t.ims", "translation_um": [0, 0, 0]}]
+        }
+        state = build_neuroglancer_state(
+            tiles_by_channel=tiles_by_channel,
+            voxel_sizes_um=[1.0, 1.0, 1.0],
+            s3_modality_path="s3://b/d/SPIM",
+        )
+        rng = state["layers"][0]["shaderControls"]["normalized"]["range"]
+        self.assertEqual(rng, [0, 200])
+
+
+class TestComputeContrastLimits(unittest.TestCase):
+    """Tests for compute_contrast_limits helpers."""
+
+    @patch(
+        "aind_exaspim_data_transformation.utils.io_utils.ImarisReader"
+    )
+    def test_compute_contrast_limits_ignores_zeros(self, mock_reader_cls):
+        import numpy as np
+
+        reader = MagicMock()
+        reader.n_levels = 3
+        reader.as_array.return_value = np.array(
+            [0, 0, 0, 100, 200, 300], dtype="uint16"
+        )
+        mock_reader_cls.return_value.__enter__.return_value = reader
+
+        low, high = compute_contrast_limits(
+            "fake.ims", low_percentile=0, high_percentile=100
+        )
+        # Zeros excluded → min nonzero 100, max 300
+        self.assertEqual(low, 100.0)
+        self.assertEqual(high, 300.0)
+        # Coarsest level (n_levels - 1 = 2) is read
+        args, _ = reader.as_array.call_args
+        self.assertIn("ResolutionLevel 2", args[0])
+
+    @patch(
+        "aind_exaspim_data_transformation.utils.io_utils.ImarisReader"
+    )
+    def test_compute_contrast_limits_high_gt_low(self, mock_reader_cls):
+        import numpy as np
+
+        reader = MagicMock()
+        reader.n_levels = 1
+        reader.as_array.return_value = np.array([5, 5, 5], dtype="uint16")
+        mock_reader_cls.return_value.__enter__.return_value = reader
+
+        low, high = compute_contrast_limits("fake.ims")
+        self.assertGreater(high, low)
+
+    def test_by_channel_skips_missing_files(self):
+        tiles_by_channel = {
+            488: [{"file_name": "missing.ims"}],
+        }
+        limits = compute_contrast_limits_by_channel(
+            tiles_by_channel=tiles_by_channel,
+            input_source_dir="/nonexistent",
+        )
+        self.assertEqual(limits, {})
+
+    @patch(
+        "aind_exaspim_data_transformation.neuroglancer_state."
+        "compute_contrast_limits"
+    )
+    def test_by_channel_aggregates_samples(self, mock_compute):
+        import tempfile
+        from pathlib import Path as _Path
+
+        mock_compute.return_value = (10.0, 500.0)
+        with tempfile.TemporaryDirectory() as tmp:
+            tile_path = _Path(tmp) / "tile.ims"
+            tile_path.write_bytes(b"")
+            limits = compute_contrast_limits_by_channel(
+                tiles_by_channel={488: [{"file_name": "tile.ims"}]},
+                input_source_dir=tmp,
+            )
+        self.assertEqual(limits, {488: (10.0, 500.0)})
 
 
 class TestGenerateNeuroglancerUrl(unittest.TestCase):

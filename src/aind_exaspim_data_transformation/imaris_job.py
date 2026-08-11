@@ -27,6 +27,7 @@ from aind_exaspim_data_transformation.models import (
 )
 from aind_exaspim_data_transformation.neuroglancer_state import (
     build_neuroglancer_state,
+    compute_contrast_limits_by_channel,
     generate_neuroglancer_url,
     parse_tiles_from_acquisition,
 )
@@ -764,13 +765,8 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
                 )
                 return
 
-            state = build_neuroglancer_state(
-                tiles_by_channel=tiles_by_channel,
-                voxel_sizes_um=voxel_sizes_um,
-                s3_modality_path=self.job_settings.s3_location,
-            )
-
-            # Upload to S3 dataset root
+            # Resolve the S3 destination + self-referential viewer URL
+            # first so it can be embedded as the first key of the state.
             s3_dataset_root = self._get_dataset_root_s3(
                 self.job_settings.s3_location
             )
@@ -781,6 +777,25 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
                 + "/"
                 + self.job_settings.neuroglancer_json_filename
             )
+            s3_json_uri = f"s3://{bucket}/{key}"
+            viewer_url = generate_neuroglancer_url(
+                s3_json_uri=s3_json_uri,
+                viewer_url=self.job_settings.neuroglancer_viewer_url,
+            )
+
+            # Sample the Imaris tiles to derive per-channel contrast limits.
+            contrast_limits_by_channel = compute_contrast_limits_by_channel(
+                tiles_by_channel=tiles_by_channel,
+                input_source_dir=str(input_source_path),
+            )
+
+            state = build_neuroglancer_state(
+                tiles_by_channel=tiles_by_channel,
+                voxel_sizes_um=voxel_sizes_um,
+                s3_modality_path=self.job_settings.s3_location,
+                contrast_limits_by_channel=contrast_limits_by_channel,
+                ng_link=viewer_url,
+            )
 
             s3_client = boto3.client("s3")
             state_json = json.dumps(state, indent=2)
@@ -789,12 +804,6 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
                 Key=key,
                 Body=state_json.encode("utf-8"),
                 ContentType="application/json",
-            )
-
-            s3_json_uri = f"s3://{bucket}/{key}"
-            viewer_url = generate_neuroglancer_url(
-                s3_json_uri=s3_json_uri,
-                viewer_url=self.job_settings.neuroglancer_viewer_url,
             )
 
             logging.info(
