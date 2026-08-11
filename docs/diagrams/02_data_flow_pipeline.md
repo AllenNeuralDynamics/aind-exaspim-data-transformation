@@ -12,15 +12,13 @@ This diagram traces data from raw Imaris `.ims` files through compression and py
 flowchart TB
     subgraph Input["Input (NFS/Lustre)"]
         IMS[("Imaris .ims files<br/>(HDF5 + LZ4 compressed)<br/>20 tiles × ~6 TB = 120 TB")]
-        ACQ["acquisition.json (v1)"]
-        INST["instrument.json (v1)"]
+        ACQ["acquisition.json (v2)"]
+        INST["instrument.json (v2)"]
         DERIV["derivatives/ (optional)"]
     end
 
     subgraph Worker0Only["Worker 0 Only (one-time setup)"]
         direction TB
-        META_FETCH["_get_additional_metadata()<br/>GET /api/v2/subject/{id}<br/>GET /api/v2/procedures/{id}"]
-        META_UPGRADE["_upgrade_metadata()<br/>v1 → v2.5+ via aind-metadata-upgrader"]
         DERIV_UPLOAD["_upload_derivatives_folder()<br/>aws s3 sync derivatives/ → S3"]
     end
 
@@ -136,20 +134,6 @@ sequenceDiagram
     Entry->>Job: run_job()
     
     alt partition_to_process == 0
-        Job->>W0: _get_additional_metadata()
-        W0->>MS: GET /api/v2/subject/{labtracks_id}
-        MS-->>W0: subject.json
-        W0->>MS: GET /api/v2/procedures/{labtracks_id}
-        MS-->>W0: procedures.json
-        W0->>S3: Upload subject.json, procedures.json
-        
-        Job->>W0: _upgrade_metadata()
-        W0->>W0: Load acquisition.json + instrument.json
-        W0->>W0: _sanitize_instrument_manufacturers()
-        W0->>W0: Upgrade() → v2.5 models
-        W0->>S3: Backup derived/v1_acquisition.json
-        W0->>S3: Upload acquisition.json (v2), instrument.json (v2)
-        
         Job->>W0: _upload_derivatives_folder()
         W0->>S3: aws s3 sync derivatives/
     end
@@ -220,13 +204,10 @@ flowchart LR
 
 ```
 s3://aind-open-data/exaSPIM_765830_2026-01-15_12-00-00/
-├── acquisition.json          (v2.5, upgraded by Worker 0)
-├── instrument.json           (v2.5, upgraded by Worker 0)
-├── subject.json              (from metadata service)
-├── procedures.json           (from metadata service)
-├── derived/
-│   ├── v1_acquisition.json   (original backup)
-│   └── v1_instrument.json    (original backup)
+├── acquisition.json          (v2, from rig)
+├── instrument.json           (v2, from rig)
+├── subject.json              (from gather_preliminary_metadata)
+├── procedures.json           (from gather_preliminary_metadata)
 └── SPIM/
     ├── tile_000_ch_488.ome.zarr/
     │   ├── zarr.json         (OME-NGFF 0.5 multiscales metadata)
@@ -252,8 +233,6 @@ s3://aind-open-data/exaSPIM_765830_2026-01-15_12-00-00/
 |------|----------|------|---------|
 | Entry | `job_entrypoint()` | `imaris_job.py:L905` | CLI parse, multiprocessing spawn |
 | Orchestrate | `run_job()` | `imaris_job.py:L855` | Main dispatch |
-| Metadata fetch | `get_additional_metadata()` | `upgrade_metadata.py:L509` | Subject/procedures from service |
-| Metadata upgrade | `upgrade_metadata()` | `upgrade_metadata.py:L617` | v1→v2 instrument/acquisition |
 | File discovery | `_get_sorted_stack_paths()` | `imaris_job.py:L96` | Glob + sort .ims |
 | Task enumeration | `_build_global_shard_task_list()` | `imaris_job.py:L683` | All (file, shard) tuples |
 | Per-file processing | `_process_file_shards()` | `imaris_job.py:L790` | Dask submission |

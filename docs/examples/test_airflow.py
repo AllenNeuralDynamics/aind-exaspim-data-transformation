@@ -34,7 +34,7 @@ IMAGE_VERSION = "dev-925f804"
 ENDPOINT = "http://aind-data-transfer-service"
 S3_BUCKET = "open"  # maps to aind-open-data-dev
 JOB_TYPE = "exaSPIM"  # registered job type on the dev cluster
-MAX_PARTITIONS = 64
+MAX_PARTITIONS = 256
 PROCESSING_SPEED_GB_PER_HOUR = 12_200
 # ────────────────────────────────────────────────────────────────────
 
@@ -110,11 +110,10 @@ def submit_exaspim_job(
 
     Notes
     -----
-    Metadata upgrade (v1 → v2.5+) is handled automatically inside the
-    SLURM job by ``imaris_job.py`` (worker 0), which has the required
-    S3 write permissions.  Subject and procedures metadata are also
-    fetched from ``aind-metadata-service`` by worker 0 (see
-    ``upgrade_metadata.get_additional_metadata``).
+    Datasets are expected to arrive with complete aind-data-schema v2
+    metadata off the rig. Subject and procedures metadata are gathered
+    upstream by the Airflow ``gather_preliminary_metadata`` step; this
+    package no longer upgrades or fetches metadata.
     """
     if subject_id is None:
         subject_id = _derive_subject_id(source)
@@ -138,7 +137,7 @@ def submit_exaspim_job(
     exaspim_job_settings = {
         "input_source": source,
         "num_of_partitions": num_partitions,
-        "dask_workers": 4,
+        "dask_workers": 0,
         "single_tile_upload": single_tile_upload,
     }
 
@@ -192,14 +191,14 @@ def submit_exaspim_job(
 
 def test_submit_exaspim_job():
     # dataset_name = "exaSPIM_718162_2026-01-29_19-28-50"
-    dataset_name = "exaSPIM_826507_2026-05-29_16-56-55"
+    dataset_name = "exaSPIM_652781_2026-07-31_13-37-31"
     data_dir = f"/allen/aind/stage/exaSPIM/{dataset_name}/exaSPIM"
 
     submit_exaspim_job(
         source=data_dir,
         project_name="Single Neuron Reconstructions",
-        subject_id="826507",
-        single_tile_upload=True,  # Set to True for testing with a single tile
+        subject_id="652781",
+        single_tile_upload=False,  # Set to True for testing with a single tile
     )
 
 
