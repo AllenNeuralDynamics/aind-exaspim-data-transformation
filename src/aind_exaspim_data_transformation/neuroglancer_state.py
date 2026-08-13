@@ -7,7 +7,6 @@ This module produces a JSON state file compatible with Neuroglancer's
 excitation wavelength (channel).
 """
 
-import json
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -53,10 +52,12 @@ def _build_dimensions(
 ) -> Dict[str, List]:
     """Build the neuroglancer ``dimensions`` block.
 
-    The exaSPIM OME-Zarr arrays are 5D (``[t, c, z, y, x]``), so the
-    coordinate space explicitly declares the singleton ``t`` (time) and
-    ``c`` (channel) dimensions in addition to the spatial ones. Declaring
-    them keeps neuroglancer from auto-assigning a non-zero ``t`` position.
+    The exaSPIM OME-Zarr arrays are 5D (``[t, c, z, y, x]``), but each
+    tile file holds a single channel and every wavelength is rendered as
+    its own layer, so the ``c`` (channel) dimension is not exposed. The
+    singleton ``t`` (time) dimension **is** declared to keep neuroglancer
+    from auto-assigning a non-zero ``t`` position. Dimensions are ordered
+    ``z, y, x, t``.
 
     Parameters
     ----------
@@ -70,11 +71,10 @@ def _build_dimensions(
     """
     z_um, y_um, x_um = voxel_sizes_um
     return {
-        "t": [0.001, "s"],
-        "c": [1, ""],
         "z": [z_um * 1e-6, "m"],
         "y": [y_um * 1e-6, "m"],
         "x": [x_um * 1e-6, "m"],
+        "t": [0.001, "s"],
     }
 
 
@@ -97,7 +97,7 @@ def _build_source_transform(
     Returns
     -------
     dict
-        A neuroglancer source transform with a 3×4 affine matrix
+        A neuroglancer source transform with a 4×5 affine matrix
         (identity scale, translation in voxel units) and
         ``outputDimensions``.
     """
@@ -111,26 +111,75 @@ def _build_source_transform(
     ty_vox = ty / y_um if y_um else 0.0
     tz_vox = tz / z_um if z_um else 0.0
 
-    # The source arrays are 5D ([t, c, z, y, x]); the matrix maps every
-    # input dimension to its output counterpart. ``t`` and ``c`` are
-    # singleton dimensions carried through with an identity row and zero
-    # translation so they stay pinned at 0.
+    # The source arrays are 5D ([t, c, z, y, x]), but neuroglancer pulls
+    # the OME ``channel``-type axis out as a separate (non-spatial)
+    # channel dimension, so the coordinate transform operates on the
+    # remaining 4 dims. The matrix has one row per output dimension
+    # (ordered z, y, x, t) and one column per input dimension in the
+    # source order ([t, z, y, x]) plus a translation column (4 + 1 = 5).
+    # ``t`` is carried through so it stays pinned at 0.
     return {
         "matrix": [
-            [1, 0, 0, 0, 0, 0],
-            [0, 1, 0, 0, 0, 0],
-            [0, 0, 1, 0, 0, tz_vox],
-            [0, 0, 0, 1, 0, ty_vox],
-            [0, 0, 0, 0, 1, tx_vox],
+            [0, 1, 0, 0, tz_vox],
+            [0, 0, 1, 0, ty_vox],
+            [0, 0, 0, 1, tx_vox],
+            [1, 0, 0, 0, 0],
         ],
         "outputDimensions": {
-            "t": [0.001, "s"],
-            "c": [1, ""],
             "z": [z_um * 1e-6, "m"],
             "y": [y_um * 1e-6, "m"],
             "x": [x_um * 1e-6, "m"],
+            "t": [0.001, "s"],
         },
     }
+
+
+def _build_position(
+    tiles_by_channel: Dict[int, List[Dict]],
+    voxel_sizes_um: List[float],
+) -> List[float]:
+    """Build the initial viewer ``position`` (ordered ``z, y, x, t``).
+
+    The singleton ``t`` (time) coordinate is pinned to ``0`` so the
+    viewer initialises on the only timepoint (declaring the ``t``
+    dimension alone is not enough; neuroglancer otherwise auto-assigns a
+    non-zero ``t`` position and nothing renders). The spatial ``z, y, x``
+    coordinates are centred on the tile mosaic (midpoint of the tile
+    translation bounding box, in voxel units) so data is in view.
+
+    Parameters
+    ----------
+    tiles_by_channel : dict
+        Mapping of wavelength (int, nm) to a list of tile dicts, each with
+        an optional ``translation_um`` (list[float], ZYX µm).
+    voxel_sizes_um : list of float
+        Voxel sizes in µm, **[Z, Y, X]** order.
+
+    Returns
+    -------
+    list of float
+        Position ``[z, y, x, t]`` in voxel units, with ``t == 0``.
+    """
+    z_um, y_um, x_um = voxel_sizes_um
+    translations_vox: List[List[float]] = []
+    for tiles in tiles_by_channel.values():
+        for tile in tiles:
+            tz, ty, tx = tile.get("translation_um") or (0.0, 0.0, 0.0)
+            translations_vox.append(
+                [
+                    tz / z_um if z_um else 0.0,
+                    ty / y_um if y_um else 0.0,
+                    tx / x_um if x_um else 0.0,
+                ]
+            )
+
+    if translations_vox:
+        arr = np.asarray(translations_vox, dtype=float)
+        z_c, y_c, x_c = ((arr.min(axis=0) + arr.max(axis=0)) / 2.0).tolist()
+    else:
+        z_c = y_c = x_c = 0.0
+
+    return [z_c, y_c, x_c, 0.0]
 
 
 def _build_shader(hex_color: str) -> str:
@@ -210,6 +259,7 @@ def _build_layers(
             "source": sources,
             "shader": _build_shader(hex_color),
             "shaderControls": {"normalized": {"range": shader_range}},
+            "blend": "additive",
             "visible": True,
             "opacity": 1.0,
         }
@@ -258,6 +308,10 @@ def build_neuroglancer_state(
     state.update(
         {
             "dimensions": _build_dimensions(voxel_sizes_um),
+            "position": _build_position(
+                tiles_by_channel=tiles_by_channel,
+                voxel_sizes_um=voxel_sizes_um,
+            ),
             "layers": _build_layers(
                 tiles_by_channel=tiles_by_channel,
                 s3_modality_path=s3_modality_path,
@@ -271,17 +325,86 @@ def build_neuroglancer_state(
     return state
 
 
+def _select_sample_level(reader, max_sample_voxels: int) -> int:
+    """Choose the finest pyramid level that fits a voxel budget.
+
+    Sampling the coarsest level is cheap but repeated mean-downsampling
+    averages away bright peaks, collapsing the high percentile toward the
+    mean. Instead we pick the *finest* level whose voxel count is within
+    ``max_sample_voxels`` so the sampled intensities preserve real signal
+    peaks while keeping the read affordable.
+
+    Parameters
+    ----------
+    reader : ImarisReader
+        Open Imaris reader.
+    max_sample_voxels : int
+        Maximum number of voxels to load for a single level.
+
+    Returns
+    -------
+    int
+        Selected resolution-level index. Falls back to the coarsest
+        level if every level exceeds the budget.
+    """
+    n_levels = reader.n_levels
+    coarsest = max(n_levels - 1, 0)
+    for level in range(n_levels):
+        shape = reader.get_true_shape_for_level(level)
+        if int(np.prod(shape)) <= max_sample_voxels:
+            return level
+    return coarsest
+
+
+def _sample_intensities(
+    imaris_path: str,
+    max_sample_voxels: int = 64_000_000,
+) -> np.ndarray:
+    """Load nonzero intensity samples from a single Imaris tile.
+
+    Reads the finest resolution level that fits ``max_sample_voxels`` and
+    returns its nonzero (foreground) voxels flattened. If the level is
+    entirely zero, the raw voxels are returned so percentiles are still
+    defined.
+
+    Parameters
+    ----------
+    imaris_path : str
+        Path to the ``.ims`` file.
+    max_sample_voxels : int
+        Voxel budget used to select the resolution level.
+
+    Returns
+    -------
+    numpy.ndarray
+        Flattened intensity samples.
+    """
+    from aind_exaspim_data_transformation.utils.io_utils import ImarisReader
+
+    with ImarisReader(str(imaris_path)) as reader:
+        level = _select_sample_level(reader, max_sample_voxels)
+        data_path = (
+            f"/DataSet/ResolutionLevel {level}/"
+            "TimePoint 0/Channel 0/Data"
+        )
+        arr = reader.as_array(data_path)
+
+    nonzero = arr[arr > 0]
+    return nonzero if nonzero.size else arr.ravel()
+
+
 def compute_contrast_limits(
     imaris_path: str,
     low_percentile: float = 1.0,
     high_percentile: float = 99.9,
+    max_sample_voxels: int = 64_000_000,
 ) -> Tuple[float, float]:
     """Estimate intensity contrast limits from an Imaris file.
 
-    Reads the coarsest pre-computed resolution level of the pyramid
-    (which is small and cheap to load fully) and returns percentile-based
-    low/high limits. Background (zero) voxels are excluded so the window
-    reflects the signal distribution.
+    Samples the finest pyramid level that fits within
+    ``max_sample_voxels`` (see :func:`_sample_intensities`) and returns
+    percentile-based low/high limits. Background (zero) voxels are
+    excluded so the window reflects the signal distribution.
 
     Parameters
     ----------
@@ -291,6 +414,8 @@ def compute_contrast_limits(
         Lower percentile for the contrast window (default 1.0).
     high_percentile : float
         Upper percentile for the contrast window (default 99.9).
+    max_sample_voxels : int
+        Voxel budget used to select the sampled resolution level.
 
     Returns
     -------
@@ -298,18 +423,7 @@ def compute_contrast_limits(
         ``(low, high)`` intensity limits. ``high`` is guaranteed to be
         strictly greater than ``low``.
     """
-    from aind_exaspim_data_transformation.utils.io_utils import ImarisReader
-
-    with ImarisReader(str(imaris_path)) as reader:
-        coarsest = max(reader.n_levels - 1, 0)
-        data_path = (
-            f"/DataSet/ResolutionLevel {coarsest}/"
-            "TimePoint 0/Channel 0/Data"
-        )
-        arr = reader.as_array(data_path)
-
-    nonzero = arr[arr > 0]
-    sample = nonzero if nonzero.size else arr.ravel()
+    sample = _sample_intensities(imaris_path, max_sample_voxels)
     low = float(np.percentile(sample, low_percentile))
     high = float(np.percentile(sample, high_percentile))
     if high <= low:
@@ -317,20 +431,54 @@ def compute_contrast_limits(
     return low, high
 
 
+def _select_representative_tiles(
+    tiles: List[Dict],
+    max_tiles: int,
+) -> List[Dict]:
+    """Pick tiles evenly spread across the mosaic.
+
+    Sampling only the first tile biases contrast toward one corner of
+    the acquisition (often background or an edge). Selecting tiles at
+    evenly spaced indices covers the spatial extent so the pooled
+    intensity distribution is representative.
+
+    Parameters
+    ----------
+    tiles : list of dict
+        Tile dicts for one channel, in acquisition order.
+    max_tiles : int
+        Maximum number of tiles to select. Values ``<= 0`` select all.
+
+    Returns
+    -------
+    list of dict
+        Selected subset of ``tiles``.
+    """
+    if max_tiles <= 0 or len(tiles) <= max_tiles:
+        return list(tiles)
+    idxs = np.linspace(0, len(tiles) - 1, max_tiles)
+    unique = sorted({int(round(i)) for i in idxs})
+    return [tiles[i] for i in unique]
+
+
 def compute_contrast_limits_by_channel(
     tiles_by_channel: Dict[int, List[Dict]],
     input_source_dir: str,
     low_percentile: float = 1.0,
     high_percentile: float = 99.9,
-    max_tiles_per_channel: int = 1,
+    max_tiles_per_channel: int = 8,
+    max_sample_voxels: int = 64_000_000,
 ) -> Dict[int, Tuple[float, float]]:
     """Estimate per-channel contrast limits from sampled Imaris tiles.
 
-    For each channel a small number of representative tiles are sampled
-    (default: the first tile) and their coarsest pyramid level is used to
-    derive intensity limits. Tiles that are missing or unreadable are
-    skipped; channels with no readable samples are omitted from the
-    result so the caller can fall back to a default range.
+    For each channel, several tiles spread evenly across the mosaic are
+    sampled (see :func:`_select_representative_tiles`), and their
+    foreground voxels are pooled into a single distribution before
+    computing percentiles. Pooling across tiles and using the finest
+    affordable resolution level gives a far more representative contrast
+    window than sampling one coarse tile. Tiles that are missing or
+    unreadable are skipped; channels with no readable samples are omitted
+    from the result so the caller can fall back to a default range.
 
     Parameters
     ----------
@@ -340,9 +488,12 @@ def compute_contrast_limits_by_channel(
     input_source_dir : str
         Directory containing the ``.ims`` tile files.
     low_percentile, high_percentile : float
-        Percentiles passed to :func:`compute_contrast_limits`.
+        Percentiles used for the contrast window.
     max_tiles_per_channel : int
         Maximum number of tiles to sample per channel.
+    max_sample_voxels : int
+        Per-tile voxel budget used to select the sampled resolution
+        level.
 
     Returns
     -------
@@ -353,9 +504,11 @@ def compute_contrast_limits_by_channel(
     limits: Dict[int, Tuple[float, float]] = {}
 
     for wavelength_nm, tiles in tiles_by_channel.items():
-        lows: List[float] = []
-        highs: List[float] = []
-        for tile in tiles[:max_tiles_per_channel]:
+        selected = _select_representative_tiles(
+            tiles, max_tiles_per_channel
+        )
+        samples: List[np.ndarray] = []
+        for tile in selected:
             tile_path = source_dir / tile.get("file_name", "")
             if not tile_path.is_file():
                 logger.warning(
@@ -364,19 +517,33 @@ def compute_contrast_limits_by_channel(
                 )
                 continue
             try:
-                low, high = compute_contrast_limits(
-                    str(tile_path), low_percentile, high_percentile
+                samples.append(
+                    _sample_intensities(
+                        str(tile_path), max_sample_voxels
+                    )
                 )
-                lows.append(low)
-                highs.append(high)
             except (OSError, ValueError, KeyError, RuntimeError) as exc:
                 logger.warning(
-                    "Failed to compute contrast limits for %s: %s",
+                    "Failed to sample intensities for %s: %s",
                     tile_path,
                     exc,
                 )
-        if lows:
-            limits[wavelength_nm] = (min(lows), max(highs))
+        if samples:
+            pooled = np.concatenate(samples)
+            low = float(np.percentile(pooled, low_percentile))
+            high = float(np.percentile(pooled, high_percentile))
+            if high <= low:
+                high = low + 1.0
+            logger.info(
+                "Channel %snm: pooled %s voxels from %s tile(s) → "
+                "contrast (%.1f, %.1f)",
+                wavelength_nm,
+                pooled.size,
+                len(samples),
+                low,
+                high,
+            )
+            limits[wavelength_nm] = (low, high)
 
     return limits
 
