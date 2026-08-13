@@ -7,11 +7,12 @@ This module produces a JSON state file compatible with Neuroglancer's
 excitation wavelength (channel).
 """
 
-import json
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote, urlparse
+
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,13 @@ def _build_dimensions(
 ) -> Dict[str, List]:
     """Build the neuroglancer ``dimensions`` block.
 
+    The exaSPIM OME-Zarr arrays are 5D (``[t, c, z, y, x]``), but each
+    tile file holds a single channel and every wavelength is rendered as
+    its own layer, so the ``c`` (channel) dimension is not exposed. The
+    singleton ``t`` (time) dimension **is** declared to keep neuroglancer
+    from auto-assigning a non-zero ``t`` position. Dimensions are ordered
+    ``z, y, x, t``.
+
     Parameters
     ----------
     voxel_sizes_um : list of float
@@ -59,13 +67,14 @@ def _build_dimensions(
     Returns
     -------
     dict
-        Neuroglancer dimensions with values expressed in metres.
+        Neuroglancer dimensions with spatial values expressed in metres.
     """
     z_um, y_um, x_um = voxel_sizes_um
     return {
-        "x": [x_um * 1e-6, "m"],
-        "y": [y_um * 1e-6, "m"],
         "z": [z_um * 1e-6, "m"],
+        "y": [y_um * 1e-6, "m"],
+        "x": [x_um * 1e-6, "m"],
+        "t": [0.001, "s"],
     }
 
 
@@ -88,7 +97,7 @@ def _build_source_transform(
     Returns
     -------
     dict
-        A neuroglancer source transform with a 3×4 affine matrix
+        A neuroglancer source transform with a 4×5 affine matrix
         (identity scale, translation in voxel units) and
         ``outputDimensions``.
     """
@@ -102,18 +111,75 @@ def _build_source_transform(
     ty_vox = ty / y_um if y_um else 0.0
     tz_vox = tz / z_um if z_um else 0.0
 
+    # The source arrays are 5D ([t, c, z, y, x]), but neuroglancer pulls
+    # the OME ``channel``-type axis out as a separate (non-spatial)
+    # channel dimension, so the coordinate transform operates on the
+    # remaining 4 dims. The matrix has one row per output dimension
+    # (ordered z, y, x, t) and one column per input dimension in the
+    # source order ([t, z, y, x]) plus a translation column (4 + 1 = 5).
+    # ``t`` is carried through so it stays pinned at 0.
     return {
         "matrix": [
-            [1, 0, 0, tx_vox],
-            [0, 1, 0, ty_vox],
-            [0, 0, 1, tz_vox],
+            [0, 1, 0, 0, tz_vox],
+            [0, 0, 1, 0, ty_vox],
+            [0, 0, 0, 1, tx_vox],
+            [1, 0, 0, 0, 0],
         ],
         "outputDimensions": {
-            "x": [x_um * 1e-6, "m"],
-            "y": [y_um * 1e-6, "m"],
             "z": [z_um * 1e-6, "m"],
+            "y": [y_um * 1e-6, "m"],
+            "x": [x_um * 1e-6, "m"],
+            "t": [0.001, "s"],
         },
     }
+
+
+def _build_position(
+    tiles_by_channel: Dict[int, List[Dict]],
+    voxel_sizes_um: List[float],
+) -> List[float]:
+    """Build the initial viewer ``position`` (ordered ``z, y, x, t``).
+
+    The singleton ``t`` (time) coordinate is pinned to ``0`` so the
+    viewer initialises on the only timepoint (declaring the ``t``
+    dimension alone is not enough; neuroglancer otherwise auto-assigns a
+    non-zero ``t`` position and nothing renders). The spatial ``z, y, x``
+    coordinates are centred on the tile mosaic (midpoint of the tile
+    translation bounding box, in voxel units) so data is in view.
+
+    Parameters
+    ----------
+    tiles_by_channel : dict
+        Mapping of wavelength (int, nm) to a list of tile dicts, each with
+        an optional ``translation_um`` (list[float], ZYX µm).
+    voxel_sizes_um : list of float
+        Voxel sizes in µm, **[Z, Y, X]** order.
+
+    Returns
+    -------
+    list of float
+        Position ``[z, y, x, t]`` in voxel units, with ``t == 0``.
+    """
+    z_um, y_um, x_um = voxel_sizes_um
+    translations_vox: List[List[float]] = []
+    for tiles in tiles_by_channel.values():
+        for tile in tiles:
+            tz, ty, tx = tile.get("translation_um") or (0.0, 0.0, 0.0)
+            translations_vox.append(
+                [
+                    tz / z_um if z_um else 0.0,
+                    ty / y_um if y_um else 0.0,
+                    tx / x_um if x_um else 0.0,
+                ]
+            )
+
+    if translations_vox:
+        arr = np.asarray(translations_vox, dtype=float)
+        z_c, y_c, x_c = ((arr.min(axis=0) + arr.max(axis=0)) / 2.0).tolist()
+    else:
+        z_c = y_c = x_c = 0.0
+
+    return [z_c, y_c, x_c, 0.0]
 
 
 def _build_shader(hex_color: str) -> str:
@@ -131,6 +197,9 @@ def _build_layers(
     tiles_by_channel: Dict[int, List[Dict]],
     s3_modality_path: str,
     voxel_sizes_um: List[float],
+    contrast_limits_by_channel: Optional[
+        Dict[int, Tuple[float, float]]
+    ] = None,
 ) -> List[Dict[str, Any]]:
     """Build neuroglancer image layers grouped by channel.
 
@@ -145,12 +214,18 @@ def _build_layers(
         ``s3://bucket/dataset/SPIM``.
     voxel_sizes_um : list of float
         Voxel sizes in µm, [Z, Y, X] order.
+    contrast_limits_by_channel : dict, optional
+        Mapping of wavelength (int, nm) to a ``(low, high)`` intensity
+        window used to initialise each layer's ``invlerp`` shader range.
+        Channels without an entry fall back to a default range.
 
     Returns
     -------
     list of dict
         Neuroglancer layer objects.
     """
+    contrast_limits_by_channel = contrast_limits_by_channel or {}
+    _DEFAULT_RANGE = [0, 200]
     layers: List[Dict[str, Any]] = []
 
     for wavelength_nm in sorted(tiles_by_channel.keys()):
@@ -175,12 +250,16 @@ def _build_layers(
 
             sources.append(source_entry)
 
+        limits = contrast_limits_by_channel.get(wavelength_nm)
+        shader_range = list(limits) if limits is not None else _DEFAULT_RANGE
+
         layer: Dict[str, Any] = {
             "name": layer_name,
             "type": "image",
             "source": sources,
             "shader": _build_shader(hex_color),
-            "shaderControls": {"normalized": {"range": [0, 200]}},
+            "shaderControls": {"normalized": {"range": shader_range}},
+            "blend": "additive",
             "visible": True,
             "opacity": 1.0,
         }
@@ -193,6 +272,10 @@ def build_neuroglancer_state(
     tiles_by_channel: Dict[int, List[Dict]],
     voxel_sizes_um: List[float],
     s3_modality_path: str,
+    contrast_limits_by_channel: Optional[
+        Dict[int, Tuple[float, float]]
+    ] = None,
+    ng_link: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build the full neuroglancer JSON state dictionary.
 
@@ -206,6 +289,12 @@ def build_neuroglancer_state(
     s3_modality_path : str
         Full S3 URI to the modality folder (e.g.
         ``s3://aind-open-data/exaSPIM_123/SPIM``).
+    contrast_limits_by_channel : dict, optional
+        Mapping of wavelength (int, nm) to a ``(low, high)`` intensity
+        window used to initialise each layer's shader range.
+    ng_link : str, optional
+        Self-referential neuroglancer viewer URL. When provided it is
+        inserted as the first key of the state for easy access.
 
     Returns
     -------
@@ -213,17 +302,250 @@ def build_neuroglancer_state(
         A dictionary representing the neuroglancer JSON state, ready to
         be serialized with ``json.dumps()``.
     """
-    state: Dict[str, Any] = {
-        "dimensions": _build_dimensions(voxel_sizes_um),
-        "layers": _build_layers(
-            tiles_by_channel=tiles_by_channel,
-            s3_modality_path=s3_modality_path,
-            voxel_sizes_um=voxel_sizes_um,
-        ),
-        "showAxisLines": False,
-        "showScaleBar": True,
-    }
+    state: Dict[str, Any] = {}
+    if ng_link is not None:
+        state["ng_link"] = ng_link
+    state.update(
+        {
+            "dimensions": _build_dimensions(voxel_sizes_um),
+            "position": _build_position(
+                tiles_by_channel=tiles_by_channel,
+                voxel_sizes_um=voxel_sizes_um,
+            ),
+            "layers": _build_layers(
+                tiles_by_channel=tiles_by_channel,
+                s3_modality_path=s3_modality_path,
+                voxel_sizes_um=voxel_sizes_um,
+                contrast_limits_by_channel=contrast_limits_by_channel,
+            ),
+            "showAxisLines": False,
+            "showScaleBar": True,
+        }
+    )
     return state
+
+
+def _select_sample_level(reader, max_sample_voxels: int) -> int:
+    """Choose the finest pyramid level that fits a voxel budget.
+
+    Sampling the coarsest level is cheap but repeated mean-downsampling
+    averages away bright peaks, collapsing the high percentile toward the
+    mean. Instead we pick the *finest* level whose voxel count is within
+    ``max_sample_voxels`` so the sampled intensities preserve real signal
+    peaks while keeping the read affordable.
+
+    Parameters
+    ----------
+    reader : ImarisReader
+        Open Imaris reader.
+    max_sample_voxels : int
+        Maximum number of voxels to load for a single level.
+
+    Returns
+    -------
+    int
+        Selected resolution-level index. Falls back to the coarsest
+        level if every level exceeds the budget.
+    """
+    n_levels = reader.n_levels
+    coarsest = max(n_levels - 1, 0)
+    for level in range(n_levels):
+        shape = reader.get_true_shape_for_level(level)
+        if int(np.prod(shape)) <= max_sample_voxels:
+            return level
+    return coarsest
+
+
+def _sample_intensities(
+    imaris_path: str,
+    max_sample_voxels: int = 64_000_000,
+) -> np.ndarray:
+    """Load nonzero intensity samples from a single Imaris tile.
+
+    Reads the finest resolution level that fits ``max_sample_voxels`` and
+    returns its nonzero (foreground) voxels flattened. If the level is
+    entirely zero, the raw voxels are returned so percentiles are still
+    defined.
+
+    Parameters
+    ----------
+    imaris_path : str
+        Path to the ``.ims`` file.
+    max_sample_voxels : int
+        Voxel budget used to select the resolution level.
+
+    Returns
+    -------
+    numpy.ndarray
+        Flattened intensity samples.
+    """
+    from aind_exaspim_data_transformation.utils.io_utils import ImarisReader
+
+    with ImarisReader(str(imaris_path)) as reader:
+        level = _select_sample_level(reader, max_sample_voxels)
+        data_path = (
+            f"/DataSet/ResolutionLevel {level}/"
+            "TimePoint 0/Channel 0/Data"
+        )
+        arr = reader.as_array(data_path)
+
+    nonzero = arr[arr > 0]
+    return nonzero if nonzero.size else arr.ravel()
+
+
+def compute_contrast_limits(
+    imaris_path: str,
+    low_percentile: float = 1.0,
+    high_percentile: float = 99.9,
+    max_sample_voxels: int = 64_000_000,
+) -> Tuple[float, float]:
+    """Estimate intensity contrast limits from an Imaris file.
+
+    Samples the finest pyramid level that fits within
+    ``max_sample_voxels`` (see :func:`_sample_intensities`) and returns
+    percentile-based low/high limits. Background (zero) voxels are
+    excluded so the window reflects the signal distribution.
+
+    Parameters
+    ----------
+    imaris_path : str
+        Path to the ``.ims`` file.
+    low_percentile : float
+        Lower percentile for the contrast window (default 1.0).
+    high_percentile : float
+        Upper percentile for the contrast window (default 99.9).
+    max_sample_voxels : int
+        Voxel budget used to select the sampled resolution level.
+
+    Returns
+    -------
+    tuple of float
+        ``(low, high)`` intensity limits. ``high`` is guaranteed to be
+        strictly greater than ``low``.
+    """
+    sample = _sample_intensities(imaris_path, max_sample_voxels)
+    low = float(np.percentile(sample, low_percentile))
+    high = float(np.percentile(sample, high_percentile))
+    if high <= low:
+        high = low + 1.0
+    return low, high
+
+
+def _select_representative_tiles(
+    tiles: List[Dict],
+    max_tiles: int,
+) -> List[Dict]:
+    """Pick tiles evenly spread across the mosaic.
+
+    Sampling only the first tile biases contrast toward one corner of
+    the acquisition (often background or an edge). Selecting tiles at
+    evenly spaced indices covers the spatial extent so the pooled
+    intensity distribution is representative.
+
+    Parameters
+    ----------
+    tiles : list of dict
+        Tile dicts for one channel, in acquisition order.
+    max_tiles : int
+        Maximum number of tiles to select. Values ``<= 0`` select all.
+
+    Returns
+    -------
+    list of dict
+        Selected subset of ``tiles``.
+    """
+    if max_tiles <= 0 or len(tiles) <= max_tiles:
+        return list(tiles)
+    idxs = np.linspace(0, len(tiles) - 1, max_tiles)
+    unique = sorted({int(round(i)) for i in idxs})
+    return [tiles[i] for i in unique]
+
+
+def compute_contrast_limits_by_channel(
+    tiles_by_channel: Dict[int, List[Dict]],
+    input_source_dir: str,
+    low_percentile: float = 1.0,
+    high_percentile: float = 99.9,
+    max_tiles_per_channel: int = 8,
+    max_sample_voxels: int = 64_000_000,
+) -> Dict[int, Tuple[float, float]]:
+    """Estimate per-channel contrast limits from sampled Imaris tiles.
+
+    For each channel, several tiles spread evenly across the mosaic are
+    sampled (see :func:`_select_representative_tiles`), and their
+    foreground voxels are pooled into a single distribution before
+    computing percentiles. Pooling across tiles and using the finest
+    affordable resolution level gives a far more representative contrast
+    window than sampling one coarse tile. Tiles that are missing or
+    unreadable are skipped; channels with no readable samples are omitted
+    from the result so the caller can fall back to a default range.
+
+    Parameters
+    ----------
+    tiles_by_channel : dict
+        Mapping of wavelength (int, nm) → list of tile dicts (each with a
+        ``file_name`` key).
+    input_source_dir : str
+        Directory containing the ``.ims`` tile files.
+    low_percentile, high_percentile : float
+        Percentiles used for the contrast window.
+    max_tiles_per_channel : int
+        Maximum number of tiles to sample per channel.
+    max_sample_voxels : int
+        Per-tile voxel budget used to select the sampled resolution
+        level.
+
+    Returns
+    -------
+    dict
+        Mapping of wavelength (int, nm) → ``(low, high)`` limits.
+    """
+    source_dir = Path(input_source_dir)
+    limits: Dict[int, Tuple[float, float]] = {}
+
+    for wavelength_nm, tiles in tiles_by_channel.items():
+        selected = _select_representative_tiles(
+            tiles, max_tiles_per_channel
+        )
+        samples: List[np.ndarray] = []
+        for tile in selected:
+            tile_path = source_dir / tile.get("file_name", "")
+            if not tile_path.is_file():
+                logger.warning(
+                    "Tile %s not found — skipping contrast sampling.",
+                    tile_path,
+                )
+                continue
+            try:
+                samples.append(
+                    _sample_intensities(
+                        str(tile_path), max_sample_voxels
+                    )
+                )
+            except (OSError, ValueError, KeyError, RuntimeError) as exc:
+                logger.warning(
+                    "Failed to sample intensities for %s: %s",
+                    tile_path,
+                    exc,
+                )
+        if samples:
+            pooled = np.concatenate(samples)
+            low = float(np.percentile(pooled, low_percentile))
+            high = float(np.percentile(pooled, high_percentile))
+            if high <= low:
+                high = low + 1.0
+            logger.info(
+                "Channel %snm: pooled %s voxels from %s tile(s) → "
+                "contrast (%.1f, %.1f)",
+                wavelength_nm,
+                pooled.size,
+                len(samples),
+                low,
+                high,
+            )
+            limits[wavelength_nm] = (low, high)
+
+    return limits
 
 
 def generate_neuroglancer_url(

@@ -823,20 +823,18 @@ class TestImarisCompressionJob(unittest.TestCase):
             with patch.object(
                 job, "_upload_derivatives_folder"
             ) as mock_upload:
-                with patch.object(job, "_upgrade_metadata") as mock_upgrade:
-                    with patch.object(job, "_write_stacks") as mock_write:
-                        mock_get_list.return_value = [
-                            ["file1.ims"],
-                            ["file2.ims"],
-                        ]
+                with patch.object(job, "_write_stacks") as mock_write:
+                    mock_get_list.return_value = [
+                        ["file1.ims"],
+                        ["file2.ims"],
+                    ]
 
-                        response = job.run_job()
+                    response = job.run_job()
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("Job finished", response.message)
         mock_get_list.assert_called_once()
         mock_upload.assert_called_once()  # partition 0
-        mock_upgrade.assert_called_once()  # partition 0
         mock_write.assert_called_once()
 
     @patch("aind_exaspim_data_transformation.imaris_job.time")
@@ -860,19 +858,17 @@ class TestImarisCompressionJob(unittest.TestCase):
             with patch.object(
                 job, "_upload_derivatives_folder"
             ) as mock_upload:
-                with patch.object(job, "_upgrade_metadata") as mock_upgrade:
-                    with patch.object(
-                        job, "_run_shard_partitioned"
-                    ) as mock_shard:
-                        mock_sorted.return_value = []
+                with patch.object(
+                    job, "_run_shard_partitioned"
+                ) as mock_shard:
+                    mock_sorted.return_value = []
 
-                        response = job.run_job()
+                    response = job.run_job()
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("Job finished", response.message)
         mock_sorted.assert_called_once()
         mock_upload.assert_called_once()  # partition 0
-        mock_upgrade.assert_called_once()  # partition 0
         mock_shard.assert_called_once_with([])
 
     @patch(
@@ -1231,91 +1227,16 @@ class TestImarisCompressionJob(unittest.TestCase):
             with patch.object(
                 job, "_upload_derivatives_folder"
             ) as mock_upload:
-                with patch.object(job, "_upgrade_metadata") as mock_upgrade:
-                    with patch.object(job, "_write_stacks") as mock_write:
-                        mock_get_list.return_value = [
-                            ["file1.ims"],
-                            ["file2.ims"],
-                        ]
+                with patch.object(job, "_write_stacks") as mock_write:
+                    mock_get_list.return_value = [
+                        ["file1.ims"],
+                        ["file2.ims"],
+                    ]
 
-                        response = job.run_job()
+                    response = job.run_job()
 
         self.assertEqual(response.status_code, 200)
         mock_upload.assert_not_called()  # Not called for partition 1
-        mock_upgrade.assert_not_called()  # Not called for partition 1
-
-    @patch("aind_exaspim_data_transformation.imaris_job.upgrade_metadata")
-    def test_upgrade_metadata_called_with_s3_location(self, mock_upgrade):
-        """_upgrade_metadata strips modality suffix from s3_location"""
-        settings = ImarisJobSettings(
-            input_source="/fake/input",
-            output_directory="/fake/output",
-            num_of_partitions=1,
-            partition_to_process=0,
-            s3_location="s3://bucket/dataset/SPIM",
-        )
-        job = ImarisCompressionJob(job_settings=settings)
-        job._upgrade_metadata()
-
-        mock_upgrade.assert_called_once_with(
-            source_dir="/fake/input",
-            s3_location="s3://bucket/dataset",
-            dry_run=False,
-        )
-
-    @patch("aind_exaspim_data_transformation.imaris_job.upgrade_metadata")
-    def test_upgrade_metadata_strips_trailing_modality_slash(
-        self, mock_upgrade
-    ):
-        """_upgrade_metadata handles trailing slash on modality suffix"""
-        settings = ImarisJobSettings(
-            input_source="/fake/input",
-            output_directory="/fake/output",
-            num_of_partitions=1,
-            partition_to_process=0,
-            s3_location="s3://bucket/dataset/SPIM/",
-        )
-        job = ImarisCompressionJob(job_settings=settings)
-        job._upgrade_metadata()
-
-        mock_upgrade.assert_called_once_with(
-            source_dir="/fake/input",
-            s3_location="s3://bucket/dataset",
-            dry_run=False,
-        )
-
-    @patch("aind_exaspim_data_transformation.imaris_job.upgrade_metadata")
-    def test_upgrade_metadata_skipped_without_s3_location(self, mock_upgrade):
-        """_upgrade_metadata is a no-op when s3_location is None"""
-        settings = ImarisJobSettings(
-            input_source="/fake/input",
-            output_directory="/fake/output",
-            num_of_partitions=1,
-            partition_to_process=0,
-            s3_location=None,
-        )
-        job = ImarisCompressionJob(job_settings=settings)
-        job._upgrade_metadata()
-
-        mock_upgrade.assert_not_called()
-
-    @patch("aind_exaspim_data_transformation.imaris_job.upgrade_metadata")
-    def test_upgrade_metadata_error_does_not_crash_job(self, mock_upgrade):
-        """_upgrade_metadata logs but does not propagate exceptions"""
-        mock_upgrade.side_effect = RuntimeError("S3 permission denied")
-
-        settings = ImarisJobSettings(
-            input_source="/fake/input",
-            output_directory="/fake/output",
-            num_of_partitions=1,
-            partition_to_process=0,
-            s3_location="s3://bucket/dataset",
-        )
-        job = ImarisCompressionJob(job_settings=settings)
-
-        # Should NOT raise
-        job._upgrade_metadata()
-        mock_upgrade.assert_called_once()
 
     @patch("aind_exaspim_data_transformation.imaris_job.Path")
     def test_single_tile_upload_sorted_paths(self, mock_path_cls):
@@ -1866,18 +1787,6 @@ class TestBuildGlobalShardTaskList(unittest.TestCase):
         self.assertEqual(len(tasks), 1)
 
     # ── Import / wiring guards ──────────────────────────────────────
-    def test_upgrade_metadata_is_importable(self):
-        """upgrade_metadata must be importable from imaris_job at import
-        time (not only when patched by tests)."""
-        import aind_exaspim_data_transformation.imaris_job as mod
-
-        self.assertTrue(
-            hasattr(mod, "upgrade_metadata"),
-            "upgrade_metadata is not imported in imaris_job — "
-            "the function call in _upgrade_metadata() will raise NameError",
-        )
-        self.assertTrue(callable(mod.upgrade_metadata))
-
     def test_partition_to_process_out_of_range_raises(self):
         """partition_to_process >= num_of_partitions must be rejected."""
         with self.assertRaises(ValueError):

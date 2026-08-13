@@ -18,24 +18,36 @@ from glob import glob
 import json
 
 import requests
+from aind_codeocean_pipeline_monitor.models import (
+    CaptureSettings,
+    PipelineMonitorSettings,
+)
 from aind_data_schema_models.modalities import Modality
 from aind_data_transfer_service.models.core import (
     SubmitJobRequestV2,
     Task,
     UploadJobConfigsV2,
 )
+from codeocean.computation import DataAssetsRunParam, RunParams
 
 # from aind_data_schema_models.platforms import Platform
 
 
-# ── Configurable defaults ──────────────────────────────────────────
+# ── Configurable defaults ─────────────────────────────────
 IMAGE = "ghcr.io/allenneuraldynamics/aind-exaspim-data-transformation"
 IMAGE_VERSION = "dev-925f804"
 ENDPOINT = "http://aind-data-transfer-service"
 S3_BUCKET = "open"  # maps to aind-open-data-dev
 JOB_TYPE = "exaSPIM"  # registered job type on the dev cluster
-MAX_PARTITIONS = 64
+MAX_PARTITIONS = 256
 PROCESSING_SPEED_GB_PER_HOUR = 12_200
+
+# Code Ocean pipeline is only triggered for exaSPIM *screening* datasets, which
+# are small (< 300 GB total). Larger datasets are transformed/uploaded only.
+CODEOCEAN_PIPELINE_ID = "5ad577f1-a6e6-49a7-af95-876480c7ed21"
+CODEOCEAN_MOUNT = "exaSPIM_screening_dataset"
+SCREENING_MAX_BYTES = 300 * 1024**3  # 300 GB
+SCREENING_PARTITIONS = 16
 # ────────────────────────────────────────────────────────────────────
 
 
@@ -50,6 +62,11 @@ def _discover_ims_files(source: str) -> list[str]:
 def _first_file_size_mb(ims_files: list[str]) -> float:
     """Size of the first .ims file in MB (used for timeout estimation)."""
     return os.path.getsize(ims_files[0]) / (1024 * 1024)
+
+
+def _total_ims_size_bytes(ims_files: list[str]) -> int:
+    """Total size in bytes of all .ims files in the dataset."""
+    return sum(os.path.getsize(f) for f in ims_files)
 
 
 def _estimate_timeout(n_tiles: int, tile_size_mb: float) -> int:
@@ -110,11 +127,10 @@ def submit_exaspim_job(
 
     Notes
     -----
-    Metadata upgrade (v1 → v2.5+) is handled automatically inside the
-    SLURM job by ``imaris_job.py`` (worker 0), which has the required
-    S3 write permissions.  Subject and procedures metadata are also
-    fetched from ``aind-metadata-service`` by worker 0 (see
-    ``upgrade_metadata.get_additional_metadata``).
+    Datasets are expected to arrive with complete aind-data-schema v2
+    metadata off the rig. Subject and procedures metadata are gathered
+    upstream by the Airflow ``gather_preliminary_metadata`` step; this
+    package no longer upgrades or fetches metadata.
     """
     if subject_id is None:
         subject_id = _derive_subject_id(source)
@@ -123,13 +139,28 @@ def submit_exaspim_job(
     ims_files = _discover_ims_files(source)
     n_tiles = len(ims_files)
     tile_size_mb = _first_file_size_mb(ims_files)
-    num_partitions = MAX_PARTITIONS
+
+    total_bytes = _total_ims_size_bytes(ims_files)
+    total_gb = total_bytes / (1024**3)
+    is_screening = total_bytes < SCREENING_MAX_BYTES
+    if is_screening:
+        num_partitions = SCREENING_PARTITIONS
+    else:
+        num_partitions = MAX_PARTITIONS
     timeout_min = _estimate_timeout(n_tiles, tile_size_mb)
+
+    
+    
 
     print(f"Tiles found       : {n_tiles}")
     print(f"First tile size   : {tile_size_mb:,.0f} MB")
+    print(f"Total dataset size: {total_gb:,.1f} GB")
     print(f"Partitions        : {num_partitions}")
     print(f"Timeout           : {timeout_min} min")
+    print(
+        f"Screening dataset : {is_screening} "
+        f"(Code Ocean pipeline {'ENABLED' if is_screening else 'SKIPPED'})"
+    )
     if single_tile_upload:
         print(f"Single tile mode  : ENABLED (testing first tile only)")
 
@@ -138,7 +169,7 @@ def submit_exaspim_job(
     exaspim_job_settings = {
         "input_source": source,
         "num_of_partitions": num_partitions,
-        "dask_workers": 4,
+        "dask_workers": 0,
         "single_tile_upload": single_tile_upload,
     }
 
@@ -152,6 +183,46 @@ def submit_exaspim_job(
         job_settings=exaspim_job_settings,
     )
 
+    # Only screening datasets (< 300 GB) trigger the Code Ocean pipeline.
+    tasks = {
+        "modality_transformation_settings": {
+            Modality.SPIM.abbreviation: custom_exaspim_task,
+        },
+        "check_s3_folder_exists": {"skip_task": True},
+        "final_check_s3_folder_exist": {"skip_task": True},
+        "check_metadata_files": {"skip_task": True},
+        "gather_preliminary_metadata": {"skip_task": False},
+        "register_data_asset": {"skip_task": not is_screening},
+        "get_codeocean_asset_id": {"skip_task": not is_screening},
+        "run_codeocean_pipeline": {"skip_task": not is_screening},
+        "remove_source_folders": {"skip_task": True},
+    }
+
+    if is_screening:
+        codeocean_pipeline_settings = PipelineMonitorSettings(
+            run_params=RunParams(
+                pipeline_id=CODEOCEAN_PIPELINE_ID,
+                data_assets=[
+                    DataAssetsRunParam(id="", mount=CODEOCEAN_MOUNT)
+                ],
+            ),
+            capture_settings=CaptureSettings(
+                tags=["exaSPIM", "RAW"],
+            ),
+        )
+        tasks["codeocean_pipeline_settings"] = {
+            Modality.SPIM.abbreviation: {
+                "skip_task": False,
+                "job_settings": {
+                    "pipeline_monitor_settings": (
+                        codeocean_pipeline_settings.model_dump(
+                            mode="json", exclude_none=True
+                        )
+                    )
+                },
+            }
+        }
+
     upload_job = UploadJobConfigsV2(
         job_type=JOB_TYPE,
         s3_bucket=S3_BUCKET,
@@ -162,19 +233,7 @@ def submit_exaspim_job(
         acq_datetime=acq_datetime,
         user_email="carson.berry@alleninstitute.org",
         email_notification_types=["all"],
-        tasks={
-            "modality_transformation_settings": {
-                Modality.SPIM.abbreviation: custom_exaspim_task,
-            },
-            "check_s3_folder_exists": {"skip_task": True},
-            "final_check_s3_folder_exist": {"skip_task": True},
-            "check_metadata_files": {"skip_task": True},
-            "gather_preliminary_metadata": {"skip_task": False},
-            "register_data_asset": {"skip_task": True},
-            "get_codeocean_asset_id": {"skip_task": True},
-            "run_codeocean_pipeline": {"skip_task": True},
-            "remove_source_folders": {"skip_task": True},
-        },
+        tasks=tasks,
     )
 
     submit_request = SubmitJobRequestV2(upload_jobs=[upload_job], 
@@ -192,14 +251,14 @@ def submit_exaspim_job(
 
 def test_submit_exaspim_job():
     # dataset_name = "exaSPIM_718162_2026-01-29_19-28-50"
-    dataset_name = "exaSPIM_826507_2026-05-29_16-56-55"
-    data_dir = f"/allen/aind/stage/exaSPIM/{dataset_name}/exaSPIM"
+    dataset_name = "exaSPIM_679201_2026-07-23_15-15-18"
+    data_dir = f"/allen/aind/stage/exaSPIM/1x_screening/{dataset_name}/exaSPIM"
 
     submit_exaspim_job(
         source=data_dir,
         project_name="Single Neuron Reconstructions",
-        subject_id="826507",
-        single_tile_upload=True,  # Set to True for testing with a single tile
+        subject_id="679201",
+        single_tile_upload=False,  # Set to True for testing with a single tile
     )
 
 
