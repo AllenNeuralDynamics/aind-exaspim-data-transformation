@@ -1337,6 +1337,158 @@ class TestImarisToZarrDistributed(unittest.TestCase):
         # Verify defaults were used - check the TensorStore spec
         mock_ts_open.assert_called()
 
+    @patch(
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr.write_ome_ngff_metadata"
+    )
+    @patch(
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr._write_zarr_metadata"
+    )
+    @patch(
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr.create_downsample_levels"
+    )
+    @patch(
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr.process_single_shard"
+    )
+    @patch("aind_exaspim_data_transformation.compress.imaris_to_zarr.ts.open")
+    @patch(
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr.ImarisReader"
+    )
+    @patch("aind_exaspim_data_transformation.compress.imaris_to_zarr.Path")
+    def test_metadata_written_by_origin_shard_owner(
+        self,
+        mock_path_cls,
+        mock_reader_cls,
+        mock_ts_open,
+        mock_process_shard,
+        mock_downsample,
+        mock_write_metadata,
+        mock_write_ome,
+    ):
+        """A non-zero worker that owns base shard (0, 0, 0) writes metadata."""
+        from aind_exaspim_data_transformation.compress.imaris_to_zarr import (
+            imaris_to_zarr_distributed,
+        )
+
+        mock_reader = MagicMock()
+        mock_reader.n_levels = 99
+        mock_reader.get_voxel_size.return_value = ([1.0, 0.5, 0.5], b"um")
+        mock_reader.get_shape.return_value = (128, 256, 512)
+        mock_reader.get_dtype.return_value = np.dtype("uint16")
+        mock_reader.get_chunks.return_value = (32, 64, 128)
+        mock_reader_cls.return_value.__enter__ = Mock(return_value=mock_reader)
+        mock_reader_cls.return_value.__exit__ = Mock(return_value=False)
+
+        mock_output_path = MagicMock()
+        mock_output_path.__truediv__ = Mock(return_value=mock_output_path)
+        mock_output_path.__str__ = Mock(return_value="/output/test.ome.zarr")
+        mock_path_cls.return_value = mock_output_path
+
+        mock_store = MagicMock()
+        mock_ts_open.return_value.result.return_value = mock_store
+
+        mock_process_shard.return_value = {
+            "shard_index": (0, 0, 0),
+            "bytes_written": 1024 * 1024,
+            "elapsed_seconds": 0.5,
+        }
+        mock_write_ome.return_value = {"multiscales": []}
+
+        imaris_to_zarr_distributed(
+            imaris_path="/input/test.ims",
+            output_path="/output",
+            voxel_size=[1.0, 0.5, 0.5],
+            chunk_shape=(32, 64, 128),
+            shard_shape=(64, 128, 256),
+            n_lvls=1,
+            channel_name="ch0",
+            stack_name="test.ome.zarr",
+            bucket_name=None,
+            dask_client=None,
+            # Non-zero worker, but it owns the base-origin shard.
+            shard_indices=[(0, 0, 0)],
+            partition_to_process=5,
+            num_of_partitions=8,
+        )
+
+        mock_write_ome.assert_called_once()
+        mock_write_metadata.assert_called_once()
+
+    @patch(
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr.write_ome_ngff_metadata"
+    )
+    @patch(
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr._write_zarr_metadata"
+    )
+    @patch(
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr.create_downsample_levels"
+    )
+    @patch(
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr.process_single_shard"
+    )
+    @patch("aind_exaspim_data_transformation.compress.imaris_to_zarr.ts.open")
+    @patch(
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr.ImarisReader"
+    )
+    @patch("aind_exaspim_data_transformation.compress.imaris_to_zarr.Path")
+    def test_metadata_skipped_when_not_origin_shard_owner(
+        self,
+        mock_path_cls,
+        mock_reader_cls,
+        mock_ts_open,
+        mock_process_shard,
+        mock_downsample,
+        mock_write_metadata,
+        mock_write_ome,
+    ):
+        """A worker that does not own base shard (0, 0, 0) skips metadata."""
+        from aind_exaspim_data_transformation.compress.imaris_to_zarr import (
+            imaris_to_zarr_distributed,
+        )
+
+        mock_reader = MagicMock()
+        mock_reader.n_levels = 99
+        mock_reader.get_voxel_size.return_value = ([1.0, 0.5, 0.5], b"um")
+        mock_reader.get_shape.return_value = (128, 256, 512)
+        mock_reader.get_dtype.return_value = np.dtype("uint16")
+        mock_reader.get_chunks.return_value = (32, 64, 128)
+        mock_reader_cls.return_value.__enter__ = Mock(return_value=mock_reader)
+        mock_reader_cls.return_value.__exit__ = Mock(return_value=False)
+
+        mock_output_path = MagicMock()
+        mock_output_path.__truediv__ = Mock(return_value=mock_output_path)
+        mock_output_path.__str__ = Mock(return_value="/output/test.ome.zarr")
+        mock_path_cls.return_value = mock_output_path
+
+        mock_store = MagicMock()
+        mock_ts_open.return_value.result.return_value = mock_store
+
+        mock_process_shard.return_value = {
+            "shard_index": (1, 0, 0),
+            "bytes_written": 1024 * 1024,
+            "elapsed_seconds": 0.5,
+        }
+        mock_write_ome.return_value = {"multiscales": []}
+
+        imaris_to_zarr_distributed(
+            imaris_path="/input/test.ims",
+            output_path="/output",
+            voxel_size=[1.0, 0.5, 0.5],
+            chunk_shape=(32, 64, 128),
+            shard_shape=(64, 128, 256),
+            n_lvls=1,
+            channel_name="ch0",
+            stack_name="test.ome.zarr",
+            bucket_name=None,
+            dask_client=None,
+            # This worker owns a non-origin shard only.
+            shard_indices=[(1, 0, 0)],
+            partition_to_process=3,
+            num_of_partitions=8,
+        )
+
+        mock_write_ome.assert_not_called()
+        mock_write_metadata.assert_not_called()
+
 
 class TestProcessSingleShardFunction(unittest.TestCase):
     """Test suite for process_single_shard function - additional tests."""

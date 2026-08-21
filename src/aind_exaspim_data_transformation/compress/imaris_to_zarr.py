@@ -2025,11 +2025,20 @@ def imaris_to_zarr_distributed(
         )
 
     # =========================================================================
-    # Step 5: Write OME-NGFF metadata (once)
+    # Step 5: Write OME-NGFF metadata (once per tile)
     # =========================================================================
-    should_write_metadata = (
-        dask_client is not None or partition_to_process == 0
-    )
+    # The root-group ``zarr.json`` (multiscales metadata) must be written
+    # exactly once per tile. Under shard-level partitioning each worker only
+    # processes a subset of a tile's base-level shards, and small tiles may
+    # never be touched by worker 0. To guarantee coverage without a single
+    # point of failure, the worker that owns the base-origin shard ``(0, 0, 0)``
+    # writes the metadata: every tile has exactly one such shard, assigned to
+    # exactly one worker. ``base_shard_indices`` resolves to the full shard
+    # list when no subset was supplied (whole-tile conversion), so it also
+    # covers the non-partitioned case. The Dask path handles a whole tile in
+    # one call, so it always writes.
+    owns_origin_shard = (0, 0, 0) in base_shard_indices
+    should_write_metadata = dask_client is not None or owns_origin_shard
 
     if should_write_metadata:
         metadata_dict = write_ome_ngff_metadata(
@@ -2048,7 +2057,7 @@ def imaris_to_zarr_distributed(
     else:
         logger.info(
             f"Metadata write skipped for worker {partition_to_process}; "
-            "assumes worker 0 will write metadata."
+            "owner of base shard (0, 0, 0) writes metadata for this tile."
         )
 
     return store_path
