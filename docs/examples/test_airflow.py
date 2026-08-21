@@ -169,7 +169,7 @@ def submit_exaspim_job(
     exaspim_job_settings = {
         "input_source": source,
         "num_of_partitions": num_partitions,
-        "dask_workers": 0,
+        "dask_workers": 1,
         "use_tensorstore": True,
         "single_tile_upload": single_tile_upload,
     }
