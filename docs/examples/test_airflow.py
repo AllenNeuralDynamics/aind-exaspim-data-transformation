@@ -35,7 +35,7 @@ from codeocean.computation import DataAssetsRunParam, RunParams
 
 # ── Configurable defaults ─────────────────────────────────
 IMAGE = "ghcr.io/allenneuraldynamics/aind-exaspim-data-transformation"
-IMAGE_VERSION = "dev-925f804"
+IMAGE_VERSION = "dev-df92e49"
 ENDPOINT = "http://aind-data-transfer-service"
 S3_BUCKET = "open"  # maps to aind-open-data-dev
 JOB_TYPE = "exaSPIM"  # registered job type on the dev cluster
@@ -170,6 +170,7 @@ def submit_exaspim_job(
         "input_source": source,
         "num_of_partitions": num_partitions,
         "dask_workers": 0,
+        "use_tensorstore": True,
         "single_tile_upload": single_tile_upload,
     }
 
@@ -251,13 +252,13 @@ def submit_exaspim_job(
 
 def test_submit_exaspim_job():
     # dataset_name = "exaSPIM_718162_2026-01-29_19-28-50"
-    dataset_name = "exaSPIM_679201_2026-07-23_15-15-18"
-    data_dir = f"/allen/aind/stage/exaSPIM/1x_screening/{dataset_name}/exaSPIM"
+    dataset_name = "exaSPIM_823507_2026-06-30_16-49-27"
+    data_dir = f"/allen/aind/stage/exaSPIM/{dataset_name}/exaSPIM"
 
     submit_exaspim_job(
         source=data_dir,
         project_name="Single Neuron Reconstructions",
-        subject_id="679201",
+        subject_id="823507",
         single_tile_upload=False,  # Set to True for testing with a single tile
     )
 
