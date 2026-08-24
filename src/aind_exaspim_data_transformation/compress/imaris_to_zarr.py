@@ -1854,13 +1854,6 @@ def imaris_to_zarr_distributed(
 
             level_info[lvl] = (lvl_spec, lvl_shape_3d)
 
-    # Small helper for deterministic partitioning
-    def _partition_list(lst: List[Any], num_parts: int) -> List[List[Any]]:
-        parts = [[] for _ in range(num_parts)]
-        for idx, item in enumerate(lst):
-            parts[idx % num_parts].append(item)
-        return parts
-
     # =========================================================================
     # Step 3: Create and submit base-level shard tasks (optionally subset)
     # =========================================================================
@@ -1943,26 +1936,59 @@ def imaris_to_zarr_distributed(
                 lvl_data_path,
             )
 
-            # Partition shards for this level across all workers
+            # Assign this level's shards to whichever worker owns the
+            # corresponding base-level shard. Base shards are partitioned
+            # globally upstream, so every base shard has exactly one owner
+            # among the workers that process this tile. Mapping each
+            # downsample shard back to a base shard therefore guarantees
+            # complete, collision-free coverage -- even for small tiles with
+            # very few base shards.
+            #
+            # Partitioning downsample shards independently across
+            # ``num_of_partitions`` (the previous behaviour) is unsafe: a
+            # worker only enters this function for a tile when it owns a base
+            # shard of that tile, so downsample shards assigned to
+            # non-participating partitions were silently dropped. This is why
+            # many small (488) tiles were missing pyramid levels below level 0.
             lvl_shard_indices = enumerate_shard_indices(
                 cast(Tuple[int, int, int], lvl_shape_3d), shard_shape
             )
-            lvl_partitioned = _partition_list(
-                lvl_shard_indices, num_of_partitions
+            base_shard_set = set(base_shard_indices)
+            base_grid = tuple(
+                (cast(Tuple[int, int, int], shape_3d)[a] + shard_shape[a] - 1)
+                // shard_shape[a]
+                for a in range(3)
             )
-            my_lvl_shards = lvl_partitioned[partition_to_process]
+            lvl_grid = tuple(
+                (
+                    cast(Tuple[int, int, int], lvl_shape_3d)[a]
+                    + shard_shape[a]
+                    - 1
+                )
+                // shard_shape[a]
+                for a in range(3)
+            )
+            my_lvl_shards = [
+                idx
+                for idx in lvl_shard_indices
+                if tuple(
+                    min(
+                        idx[a] * base_grid[a] // lvl_grid[a],
+                        base_grid[a] - 1,
+                    )
+                    for a in range(3)
+                )
+                in base_shard_set
+            ]
             logger.debug(
-                "Level %s partitioning: total=%s my_shards=%s",
+                "Level %s ownership: total=%s my_shards=%s "
+                "(base_grid=%s lvl_grid=%s)",
                 lvl,
                 len(lvl_shard_indices),
                 len(my_lvl_shards),
+                base_grid,
+                lvl_grid,
             )
-
-            if not my_lvl_shards:
-                logger.info(
-                    f"Worker {partition_to_process}: no shards for level {lvl}"
-                )
-                continue
 
             lvl_tasks = create_shard_tasks(
                 imaris_path=imaris_path,
