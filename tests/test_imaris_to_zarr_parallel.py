@@ -1030,6 +1030,140 @@ class TestImarisToZarrDistributed(unittest.TestCase):
         "aind_exaspim_data_transformation.compress.imaris_to_zarr._write_zarr_metadata"
     )
     @patch(
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr.process_single_shard"
+    )
+    @patch("aind_exaspim_data_transformation.compress.imaris_to_zarr.ts.open")
+    @patch(
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr.ImarisReader"
+    )
+    @patch("aind_exaspim_data_transformation.compress.imaris_to_zarr.Path")
+    def test_translate_pyramid_full_coverage_small_tile(
+        self,
+        mock_path_cls,
+        mock_reader_cls,
+        mock_ts_open,
+        mock_process_shard,
+        mock_write_metadata,
+        mock_write_ome,
+    ):
+        """Every pyramid-level shard is written exactly once.
+
+        Regression test: previously the downsample levels were partitioned
+        across ``num_of_partitions`` independently of base-shard ownership.
+        A worker only enters ``imaris_to_zarr_distributed`` for a tile when
+        it owns a base shard of that tile, so downsample shards assigned to
+        partitions that never processed the tile were silently dropped --
+        leaving small (488) tiles without pyramid levels below level 0.
+
+        Here a tile's base shards are owned only by a block of high-numbered
+        partitions (emulating the global scheduler landing this small tile's
+        base shards away from the low partition indices). Every downsample
+        shard must still be written exactly once.
+        """
+        from aind_exaspim_data_transformation.compress.imaris_to_zarr import (
+            enumerate_shard_indices,
+            imaris_to_zarr_distributed,
+        )
+
+        base_shape = (2560, 1536, 2048)
+        shard_shape = (512, 512, 512)
+        level_shapes = {
+            1: (1280, 768, 1024),
+            2: (640, 384, 512),
+        }
+        n_lvls = 3
+
+        mock_reader = MagicMock()
+        mock_reader.n_levels = 99
+        mock_reader.get_voxel_size.return_value = ([1.0, 0.5, 0.5], b"um")
+        mock_reader.get_shape.return_value = base_shape
+        mock_reader.get_metadata_shape.return_value = base_shape
+        mock_reader.get_dtype.return_value = np.dtype("uint16")
+        mock_reader.get_chunks.return_value = (128, 128, 128)
+        mock_reader.get_true_shape_for_level.side_effect = (
+            lambda lvl: level_shapes[lvl]
+        )
+        mock_reader_cls.return_value.__enter__ = Mock(return_value=mock_reader)
+        mock_reader_cls.return_value.__exit__ = Mock(return_value=False)
+
+        mock_output_path = MagicMock()
+        mock_output_path.__truediv__ = Mock(return_value=mock_output_path)
+        mock_output_path.__str__ = Mock(return_value="/output/test.ome.zarr")
+        mock_path_cls.return_value = mock_output_path
+
+        mock_ts_open.return_value.result.return_value = MagicMock()
+        mock_write_ome.return_value = {"multiscales": []}
+
+        # Record every (level, shard_index) written across all workers.
+        written = []
+
+        def _record(**task):
+            data_path = task["data_path"]
+            level = int(
+                data_path.split("ResolutionLevel ")[1].split("/")[0]
+            )
+            written.append((level, task["shard_index"]))
+            return {
+                "shard_index": task["shard_index"],
+                "bytes_written": 1024,
+                "elapsed_seconds": 0.1,
+            }
+
+        mock_process_shard.side_effect = _record
+
+        # Assign the tile's base shards ONLY to a block of high-numbered
+        # partitions, leaving the low partition indices (where the old code
+        # concentrated downsample shards) without any base shard.
+        base_shards = enumerate_shard_indices(base_shape, shard_shape)
+        num_of_partitions = 256
+        first_partition = 100
+
+        for offset, base_shard in enumerate(base_shards):
+            imaris_to_zarr_distributed(
+                imaris_path="/input/test.ims",
+                output_path="/output",
+                voxel_size=[1.0, 0.5, 0.5],
+                chunk_shape=(128, 128, 128),
+                shard_shape=shard_shape,
+                n_lvls=n_lvls,
+                scale_factor=(2, 2, 2),
+                channel_name="ch0",
+                stack_name="test.ome.zarr",
+                bucket_name=None,
+                dask_client=None,
+                shard_indices=[base_shard],
+                translate_pyramid_levels=True,
+                partition_to_process=first_partition + offset,
+                num_of_partitions=num_of_partitions,
+            )
+
+        expected = set()
+        for lvl, shape in level_shapes.items():
+            for shard in enumerate_shard_indices(shape, shard_shape):
+                expected.add((lvl, shard))
+
+        written_levels = [item for item in written if item[0] >= 1]
+
+        # No pyramid-level shard is written by more than one worker.
+        self.assertEqual(
+            len(written_levels),
+            len(set(written_levels)),
+            "A pyramid-level shard was written by more than one worker",
+        )
+        # Every pyramid-level shard is written.
+        self.assertEqual(
+            set(written_levels),
+            expected,
+            "Some pyramid-level shards were never written",
+        )
+
+    @patch(
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr.write_ome_ngff_metadata"
+    )
+    @patch(
+        "aind_exaspim_data_transformation.compress.imaris_to_zarr._write_zarr_metadata"
+    )
+    @patch(
         "aind_exaspim_data_transformation.compress.imaris_to_zarr.create_downsample_levels"
     )
     @patch(
