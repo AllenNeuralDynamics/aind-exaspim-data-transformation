@@ -28,10 +28,10 @@ DEFAULT_VIEWER_URL = "https://neuroglancer-demo.appspot.com"
 _WAVELENGTH_TO_HEX: Dict[int, str] = {
     405: "ff00ff",  # violet
     445: "0000ff",  # blue
-    488: "00ff00",  # green
+    488: "00F7FF",  # cyan 
     514: "00ff80",  # cyan-green
     532: "80ff00",  # yellow-green
-    561: "ffff00",  # yellow
+    561: "C6FF00",  # yellow-green 
     594: "ff8000",  # orange
     638: "ff0000",  # red
     647: "ff0000",  # red
