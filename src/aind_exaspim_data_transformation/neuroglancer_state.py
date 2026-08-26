@@ -8,6 +8,7 @@ excitation wavelength (channel).
 """
 
 import logging
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote, urlparse
@@ -16,6 +17,10 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+# Matches the ``_ch_<wavelength>`` token in exaSPIM tile file names, e.g.
+# ``tile_000000_ch_561.ims`` -> 561.
+_CH_FILENAME_RE = re.compile(r"_ch_(\d+)", re.IGNORECASE)
+
 # Neuroglancer viewer base URL (public demo instance)
 DEFAULT_VIEWER_URL = "https://neuroglancer-demo.appspot.com"
 
@@ -23,10 +28,10 @@ DEFAULT_VIEWER_URL = "https://neuroglancer-demo.appspot.com"
 _WAVELENGTH_TO_HEX: Dict[int, str] = {
     405: "ff00ff",  # violet
     445: "0000ff",  # blue
-    488: "00ff00",  # green
+    488: "00F7FF",  # cyan 
     514: "00ff80",  # cyan-green
     532: "80ff00",  # yellow-green
-    561: "ffff00",  # yellow
+    561: "C6FF00",  # yellow-green 
     594: "ff8000",  # orange
     638: "ff0000",  # red
     647: "ff0000",  # red
@@ -45,6 +50,123 @@ def wavelength_to_hex(wavelength_nm: int) -> str:
     Falls back to white (``"ffffff"``) for unknown wavelengths.
     """
     return _WAVELENGTH_TO_HEX.get(wavelength_nm, "ffffff")
+
+
+def _coerce_wavelength(value: Any) -> int:
+    """Coerce a wavelength value to ``int``, returning ``0`` on failure.
+
+    Parameters
+    ----------
+    value : Any
+        Wavelength as an int, float, or numeric string (e.g. ``"561"``).
+
+    Returns
+    -------
+    int
+        The wavelength in nm, or ``0`` when ``value`` is missing or not
+        parseable.
+    """
+    if value is None:
+        return 0
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _wavelength_from_filename(file_name: str) -> int:
+    """Extract the excitation wavelength from an exaSPIM tile file name.
+
+    exaSPIM tiles encode the channel as a ``_ch_<wavelength>`` token, e.g.
+    ``tile_000000_ch_561.ims``. This is used as a last-resort fallback when
+    the acquisition metadata does not provide a usable wavelength.
+
+    Parameters
+    ----------
+    file_name : str
+        Tile file name (or path).
+
+    Returns
+    -------
+    int
+        The wavelength in nm parsed from the name, or ``0`` if absent.
+    """
+    if not file_name:
+        return 0
+    match = _CH_FILENAME_RE.search(file_name)
+    return int(match.group(1)) if match else 0
+
+
+def _resolve_tile_wavelength(
+    metadata_wavelength: Any, file_name: str
+) -> int:
+    """Resolve a tile's wavelength from metadata, falling back to the name.
+
+    Parameters
+    ----------
+    metadata_wavelength : Any
+        Wavelength value pulled from the acquisition metadata (may be
+        ``None``, ``0``, or a numeric string).
+    file_name : str
+        Tile file name, used to recover the channel from the ``_ch_<nm>``
+        token when the metadata value is missing or unparseable.
+
+    Returns
+    -------
+    int
+        The resolved wavelength in nm (``0`` if it cannot be determined).
+    """
+    wavelength = _coerce_wavelength(metadata_wavelength)
+    if wavelength:
+        return wavelength
+    fallback = _wavelength_from_filename(file_name)
+    if fallback:
+        logger.warning(
+            "Wavelength missing from metadata for tile %s; recovered "
+            "%snm from the file name.",
+            file_name,
+            fallback,
+        )
+    return fallback
+
+
+def _warn_on_channel_collapse(
+    tiles_by_channel: Dict[int, List[Dict]],
+) -> None:
+    """Log warnings when channel resolution looks broken.
+
+    Warns if any tiles resolved to wavelength ``0`` (unknown channel) or
+    if tiles with distinct ``_ch_<nm>`` file-name tokens were merged into
+    the same wavelength bucket — both symptoms of the metadata parsing
+    failing to distinguish channels.
+
+    Parameters
+    ----------
+    tiles_by_channel : dict
+        Mapping of wavelength (int, nm) to a list of tile dicts.
+    """
+    if 0 in tiles_by_channel:
+        logger.warning(
+            "%s tile(s) could not be assigned a wavelength and were "
+            "grouped under channel 0; the neuroglancer state may render "
+            "channels incorrectly.",
+            len(tiles_by_channel[0]),
+        )
+
+    for wavelength_nm, tiles in tiles_by_channel.items():
+        filename_channels = {
+            _wavelength_from_filename(tile.get("file_name", ""))
+            for tile in tiles
+        }
+        filename_channels.discard(0)
+        if len(filename_channels) > 1:
+            logger.warning(
+                "Channel %snm bucket mixes tiles from distinct file-name "
+                "channels %s; wavelength metadata resolution is likely "
+                "incorrect.",
+                wavelength_nm,
+                sorted(filename_channels),
+            )
 
 
 def _build_dimensions(
@@ -259,7 +381,7 @@ def _build_layers(
             "source": sources,
             "shader": _build_shader(hex_color),
             "shaderControls": {"normalized": {"range": shader_range}},
-            "blend": "additive",
+            "blend": "default",
             "visible": True,
             "opacity": 1.0,
         }
@@ -618,10 +740,14 @@ def _parse_tiles_schema_v1(
 
     for tile in acquisition_config.get("tiles", []):
         file_name = tile.get("file_name", "")
+        # Wavelength may live nested under ``channel`` (some 1.0.x exports)
+        # or flat on the tile itself (others). Try both, then fall back to
+        # the ``_ch_<nm>`` token in the file name.
         channel = tile.get("channel", {})
-        wavelength = channel.get("excitation_wavelength", 0)
-        if isinstance(wavelength, str):
-            wavelength = int(float(wavelength))
+        metadata_wavelength = channel.get(
+            "excitation_wavelength"
+        ) or tile.get("excitation_wavelength")
+        wavelength = _resolve_tile_wavelength(metadata_wavelength, file_name)
 
         # Parse coordinate transformations
         coord_transforms = tile.get("coordinate_transformations", [])
@@ -669,6 +795,7 @@ def _parse_tiles_schema_v1(
             "defaulting to [1, 1, 1] µm."
         )
 
+    _warn_on_channel_collapse(tiles_by_channel)
     return tiles_by_channel, voxel_sizes_um
 
 
@@ -705,14 +832,20 @@ def _parse_tiles_schema_v2(
 
                 # Resolve wavelength: first try the image's own channel
                 # field, then fall back to matching channel_name in the
-                # configuration-level channels list.
+                # configuration-level channels list, then to the
+                # ``_ch_<nm>`` token in the file name.
                 img_channel = image.get("channel", {})
-                wavelength = img_channel.get("excitation_wavelength", 0)
-                if not wavelength:
+                metadata_wavelength = img_channel.get("excitation_wavelength")
+                if not metadata_wavelength:
+                    metadata_wavelength = image.get("excitation_wavelength")
+                if not metadata_wavelength:
                     ch_name = image.get("channel_name", "")
-                    wavelength = channel_wavelength_map.get(ch_name, 0)
-                if isinstance(wavelength, str):
-                    wavelength = int(float(wavelength))
+                    metadata_wavelength = channel_wavelength_map.get(
+                        ch_name, 0
+                    )
+                wavelength = _resolve_tile_wavelength(
+                    metadata_wavelength, file_name
+                )
 
                 transforms = image.get(
                     "image_to_acquisition_transform", []
@@ -758,4 +891,5 @@ def _parse_tiles_schema_v2(
             "defaulting to [1, 1, 1] µm."
         )
 
+    _warn_on_channel_collapse(tiles_by_channel)
     return tiles_by_channel, voxel_sizes_um
