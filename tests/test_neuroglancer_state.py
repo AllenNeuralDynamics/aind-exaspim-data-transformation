@@ -119,7 +119,7 @@ class TestBuildLayers(unittest.TestCase):
         self.assertEqual(layer["name"], "CH_488")
         self.assertEqual(layer["type"], "image")
         self.assertTrue(layer["visible"])
-        self.assertEqual(layer["blend"], "additive")
+        self.assertEqual(layer["blend"], "default")
         self.assertEqual(len(layer["source"]), 1)
         self.assertIn(
             "zarr3://s3://bucket/dataset/SPIM/tile_000_ch_488.ome.zarr",
