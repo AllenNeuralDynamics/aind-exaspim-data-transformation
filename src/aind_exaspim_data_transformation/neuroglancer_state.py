@@ -381,7 +381,7 @@ def _build_layers(
             "source": sources,
             "shader": _build_shader(hex_color),
             "shaderControls": {"normalized": {"range": shader_range}},
-            "blend": "additive",
+            "blend": "default",
             "visible": True,
             "opacity": 1.0,
         }
