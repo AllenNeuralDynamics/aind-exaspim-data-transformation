@@ -560,6 +560,112 @@ class TestParseTilesFromAcquisition(unittest.TestCase):
         self.assertAlmostEqual(voxel_sizes_um[1], 15.04)
         self.assertAlmostEqual(voxel_sizes_um[2], 15.04)
 
+    def test_schema_v1_flat_excitation_wavelength(self):
+        # Some 1.0.4 exports put excitation_wavelength/channel_name flat on
+        # the tile (no nested ``channel`` object). Both channels must still
+        # be resolved into distinct groups.
+        acquisition = {
+            "schema_version": "1.0.4",
+            "tiles": [
+                {
+                    "file_name": "tile_000000_ch_488.ims",
+                    "channel_name": "488",
+                    "excitation_wavelength": 488,
+                    "coordinate_transformations": [
+                        {"type": "scale", "scale": ["0.748", "0.748", "1.0"]},
+                    ],
+                },
+                {
+                    "file_name": "tile_000000_ch_561.ims",
+                    "channel_name": "561",
+                    "excitation_wavelength": 561,
+                    "coordinate_transformations": [
+                        {"type": "scale", "scale": ["0.748", "0.748", "1.0"]},
+                    ],
+                },
+            ],
+        }
+        tiles_by_channel, _ = parse_tiles_from_acquisition(acquisition)
+        self.assertIn(488, tiles_by_channel)
+        self.assertIn(561, tiles_by_channel)
+        self.assertNotIn(0, tiles_by_channel)
+        self.assertEqual(len(tiles_by_channel[488]), 1)
+        self.assertEqual(len(tiles_by_channel[561]), 1)
+
+    def test_schema_v1_filename_fallback(self):
+        # No wavelength anywhere in the metadata; it must be recovered from
+        # the ``_ch_<nm>`` token in the file name.
+        acquisition = {
+            "schema_version": "1.0.4",
+            "tiles": [
+                {
+                    "file_name": "tile_000000_ch_488.ims",
+                    "coordinate_transformations": [
+                        {"type": "scale", "scale": ["0.748", "0.748", "1.0"]},
+                    ],
+                },
+                {
+                    "file_name": "tile_000000_ch_561.ims",
+                    "coordinate_transformations": [
+                        {"type": "scale", "scale": ["0.748", "0.748", "1.0"]},
+                    ],
+                },
+            ],
+        }
+        tiles_by_channel, _ = parse_tiles_from_acquisition(acquisition)
+        self.assertEqual(sorted(tiles_by_channel.keys()), [488, 561])
+
+    def test_schema_v2_filename_fallback(self):
+        acquisition = {
+            "schema_version": "2.1.0",
+            "data_streams": [
+                {
+                    "configurations": [
+                        {
+                            "images": [
+                                {
+                                    "file_name": "tile_000000_ch_488.ims",
+                                    "image_to_acquisition_transform": [
+                                        {
+                                            "object_type": "Scale",
+                                            "scale": ["1.0", "1.0", "1.0"],
+                                        },
+                                    ],
+                                },
+                                {
+                                    "file_name": "tile_000000_ch_561.ims",
+                                    "image_to_acquisition_transform": [
+                                        {
+                                            "object_type": "Scale",
+                                            "scale": ["1.0", "1.0", "1.0"],
+                                        },
+                                    ],
+                                },
+                            ]
+                        }
+                    ]
+                }
+            ],
+        }
+        tiles_by_channel, _ = parse_tiles_from_acquisition(acquisition)
+        self.assertEqual(sorted(tiles_by_channel.keys()), [488, 561])
+
+    def test_schema_v1_unresolvable_wavelength_groups_zero(self):
+        # No metadata wavelength and no ``_ch_`` token → channel 0 bucket.
+        acquisition = {
+            "schema_version": "1.0.4",
+            "tiles": [
+                {
+                    "file_name": "mystery_tile.ims",
+                    "coordinate_transformations": [
+                        {"type": "scale", "scale": ["1.0", "1.0", "1.0"]},
+                    ],
+                }
+            ],
+        }
+        tiles_by_channel, _ = parse_tiles_from_acquisition(acquisition)
+        self.assertIn(0, tiles_by_channel)
+
 
 class TestGenerateNeuroglancerStateIntegration(unittest.TestCase):
     """Integration test for _generate_neuroglancer_state on ImarisJob."""
