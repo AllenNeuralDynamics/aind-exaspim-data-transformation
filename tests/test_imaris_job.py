@@ -1,9 +1,12 @@
 """Tests for ImarisCompressionJob class"""
 
 import os
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
+
+from botocore.exceptions import ClientError
 
 from aind_exaspim_data_transformation.imaris_job import ImarisCompressionJob
 from aind_exaspim_data_transformation.models import (
@@ -748,55 +751,56 @@ class TestImarisCompressionJob(unittest.TestCase):
         # Should not raise error
         job._write_stacks([])
 
-    @patch("aind_exaspim_data_transformation.imaris_job.utils.sync_dir_to_s3")
-    @patch("aind_exaspim_data_transformation.imaris_job.Path")
-    def test_upload_derivatives_folder_exists(self, mock_path_cls, mock_sync):
+    @patch(
+        "aind_exaspim_data_transformation.imaris_job.utils.upload_dir_to_s3"
+    )
+    def test_upload_derivatives_folder_exists(self, mock_upload):
         """Test _upload_derivatives_folder when folder exists"""
-        settings_with_s3 = ImarisJobSettings(
-            input_source="/fake/input",
-            output_directory="/fake/output",
-            s3_location="s3://my-bucket/prefix",
-            num_of_partitions=1,
-            partition_to_process=0,
+        with tempfile.TemporaryDirectory() as temp_dir:
+            dataset_root = Path(temp_dir)
+            tiles_dir = dataset_root / "exaSPIM"
+            tiles_dir.mkdir()
+            derivatives = dataset_root / "derivatives"
+            derivatives.mkdir()
+            (derivatives / "v1_acquisition.json").write_text("{}")
+
+            settings_with_s3 = ImarisJobSettings(
+                input_source=str(tiles_dir),
+                output_directory="/fake/output",
+                s3_location="s3://my-bucket/dataset/SPIM",
+                num_of_partitions=1,
+                partition_to_process=0,
+            )
+            job = ImarisCompressionJob(job_settings=settings_with_s3)
+
+            job._upload_derivatives_folder()
+
+        mock_upload.assert_called_once_with(
+            derivatives, "s3://my-bucket/dataset/derivatives"
         )
-        job = ImarisCompressionJob(job_settings=settings_with_s3)
 
-        # Mock derivatives path
-        mock_deriv_path = MagicMock()
-        mock_deriv_path.exists.return_value = True
-
-        mock_input_path = MagicMock()
-        mock_input_path.joinpath.return_value = mock_deriv_path
-
-        mock_path_cls.return_value = mock_input_path
-
-        job._upload_derivatives_folder()
-
-        mock_sync.assert_called_once()
-
-    @patch("aind_exaspim_data_transformation.imaris_job.Path")
-    def test_upload_derivatives_folder_not_exists(self, mock_path_cls):
+    @patch(
+        "aind_exaspim_data_transformation.imaris_job.utils.upload_dir_to_s3"
+    )
+    def test_upload_derivatives_folder_not_exists(self, mock_upload):
         """Test _upload_derivatives_folder when folder doesn't exist"""
-        settings_with_s3 = ImarisJobSettings(
-            input_source="/fake/input",
-            output_directory="/fake/output",
-            s3_location="s3://my-bucket/prefix",
-            num_of_partitions=1,
-            partition_to_process=0,
-        )
-        job = ImarisCompressionJob(job_settings=settings_with_s3)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            tiles_dir = Path(temp_dir) / "exaSPIM"
+            tiles_dir.mkdir()
 
-        # Mock derivatives path not existing
-        mock_deriv_path = MagicMock()
-        mock_deriv_path.exists.return_value = False
+            settings_with_s3 = ImarisJobSettings(
+                input_source=str(tiles_dir),
+                output_directory="/fake/output",
+                s3_location="s3://my-bucket/dataset/SPIM",
+                num_of_partitions=1,
+                partition_to_process=0,
+            )
+            job = ImarisCompressionJob(job_settings=settings_with_s3)
 
-        mock_input_path = MagicMock()
-        mock_input_path.joinpath.return_value = mock_deriv_path
+            # Should not raise error
+            job._upload_derivatives_folder()
 
-        mock_path_cls.return_value = mock_input_path
-
-        # Should not raise error
-        job._upload_derivatives_folder()
+        mock_upload.assert_not_called()
 
     @patch("aind_exaspim_data_transformation.imaris_job.time")
     def test_run_job(self, mock_time):
@@ -1707,6 +1711,271 @@ class TestGetTileTranslationFromAcquisition(unittest.TestCase):
             mock_path, "tile_000000_ch_561.ims"
         )
         self.assertIsNone(result)
+
+
+class TestGetTileTranslationSchemaV2(unittest.TestCase):
+    """Schema v2 (``data_streams``) tile translation lookups.
+
+    Regression cover for datasets whose acquisition.json has been upgraded
+    to v2. Before the v2 branch existed the lookup returned ``None`` and the
+    writer silently fell back to Imaris ``ExtMin``, which is X/Y transposed
+    on some exaSPIM datasets and mis-tiles the mosaic.
+    """
+
+    _ACQ_CONFIG_V2 = {
+        "schema_version": "2.5.3",
+        "data_streams": [
+            {
+                "configurations": [
+                    {
+                        "images": [
+                            {
+                                "file_name": "tile_000000_ch_488.ims",
+                                "image_to_acquisition_transform": [
+                                    {
+                                        "object_type": "Scale",
+                                        "scale": [0.748, 0.748, 1.0],
+                                    },
+                                    {
+                                        "object_type": "Translation",
+                                        # X=30.683 mm, Y=8.0555 mm, Z=-3.8 mm
+                                        "translation": [
+                                            30.68348416,
+                                            8.0555104,
+                                            -3.8,
+                                        ],
+                                    },
+                                ],
+                            },
+                            {
+                                "file_name": "tile_no_translation.ims",
+                                "image_to_acquisition_transform": [
+                                    {
+                                        "object_type": "Scale",
+                                        "scale": [0.748, 0.748, 1.0],
+                                    }
+                                ],
+                            },
+                            {
+                                "file_name": "tile_bad_translation.ims",
+                                "image_to_acquisition_transform": [
+                                    {
+                                        "object_type": "Translation",
+                                        "translation": [1.0, 2.0],
+                                    }
+                                ],
+                            },
+                        ]
+                    }
+                ]
+            }
+        ],
+    }
+
+    @patch(
+        "aind_exaspim_data_transformation.imaris_job.utils.read_json_as_dict"
+    )
+    def test_returns_zyx_micrometers(self, mock_read):
+        """Translation is converted from mm XYZ → µm ZYX."""
+        mock_path = MagicMock()
+        mock_path.is_file.return_value = True
+        mock_read.return_value = self._ACQ_CONFIG_V2
+
+        result = ImarisCompressionJob._get_tile_translation_from_acquisition(
+            mock_path, "tile_000000_ch_488.ims"
+        )
+
+        self.assertIsNotNone(result)
+        self.assertAlmostEqual(result[0], -3800.0, places=3)
+        self.assertAlmostEqual(result[1], 8055.5104, places=3)
+        self.assertAlmostEqual(result[2], 30683.48416, places=3)
+
+    @patch(
+        "aind_exaspim_data_transformation.imaris_job.utils.read_json_as_dict"
+    )
+    def test_returns_none_for_missing_tile(self, mock_read):
+        """Returns None when the tile is absent from data_streams."""
+        mock_path = MagicMock()
+        mock_path.is_file.return_value = True
+        mock_read.return_value = self._ACQ_CONFIG_V2
+
+        result = ImarisCompressionJob._get_tile_translation_from_acquisition(
+            mock_path, "tile_999999_ch_488.ims"
+        )
+        self.assertIsNone(result)
+
+    @patch(
+        "aind_exaspim_data_transformation.imaris_job.utils.read_json_as_dict"
+    )
+    def test_returns_none_when_tile_has_no_translation(self, mock_read):
+        """Returns None when the image has no Translation transform."""
+        mock_path = MagicMock()
+        mock_path.is_file.return_value = True
+        mock_read.return_value = self._ACQ_CONFIG_V2
+
+        result = ImarisCompressionJob._get_tile_translation_from_acquisition(
+            mock_path, "tile_no_translation.ims"
+        )
+        self.assertIsNone(result)
+
+    @patch(
+        "aind_exaspim_data_transformation.imaris_job.utils.read_json_as_dict"
+    )
+    def test_returns_none_for_malformed_translation(self, mock_read):
+        """Returns None when the translation does not have 3 components."""
+        mock_path = MagicMock()
+        mock_path.is_file.return_value = True
+        mock_read.return_value = self._ACQ_CONFIG_V2
+
+        result = ImarisCompressionJob._get_tile_translation_from_acquisition(
+            mock_path, "tile_bad_translation.ims"
+        )
+        self.assertIsNone(result)
+
+
+class TestUploadMetadataFiles(unittest.TestCase):
+    """Tests for ImarisCompressionJob._upload_metadata_files."""
+
+    @staticmethod
+    def _fake_upload(local_path, s3_uri, content_type=None):
+        """Stand-in for utils.upload_file_to_s3.
+
+        Reproduces the one behaviour the caller depends on: the real helper
+        reads the file eagerly, so an absent file raises FileNotFoundError
+        rather than silently succeeding. See
+        TestS3Helpers.test_upload_file_to_s3_missing_file.
+        """
+        if not Path(local_path).exists():
+            raise FileNotFoundError(local_path)
+
+    def _make_job(self, dataset_root, s3_location="s3://my-bucket/dataset"):
+        """Build a job whose input_source sits under ``dataset_root``."""
+        tiles_dir = Path(dataset_root) / "exaSPIM"
+        tiles_dir.mkdir(exist_ok=True)
+        settings = ImarisJobSettings(
+            input_source=str(tiles_dir),
+            output_directory="/fake/output",
+            s3_location=(
+                None if s3_location is None else f"{s3_location}/SPIM"
+            ),
+            num_of_partitions=1,
+            partition_to_process=0,
+        )
+        return ImarisCompressionJob(job_settings=settings)
+
+    @patch(
+        "aind_exaspim_data_transformation.imaris_job.utils.upload_file_to_s3"
+    )
+    def test_uploads_acquisition_and_instrument(self, mock_upload):
+        """Both root metadata files are uploaded to the dataset root."""
+        mock_upload.side_effect = self._fake_upload
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "acquisition.json").write_text("{}")
+            (root / "instrument.json").write_text("{}")
+            job = self._make_job(root)
+
+            job._upload_metadata_files()
+
+        self.assertEqual(mock_upload.call_count, 2)
+        uploaded = [call.args[1] for call in mock_upload.call_args_list]
+        self.assertEqual(
+            uploaded,
+            [
+                "s3://my-bucket/dataset/acquisition.json",
+                "s3://my-bucket/dataset/instrument.json",
+            ],
+        )
+
+    @patch(
+        "aind_exaspim_data_transformation.imaris_job.utils.upload_file_to_s3"
+    )
+    def test_skips_absent_instrument(self, mock_upload):
+        """A missing optional file is skipped without error."""
+        mock_upload.side_effect = self._fake_upload
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "acquisition.json").write_text("{}")
+            job = self._make_job(root)
+
+            job._upload_metadata_files()
+
+        self.assertEqual(mock_upload.call_count, 2)
+        self.assertEqual(
+            mock_upload.call_args_list[0].args[1],
+            "s3://my-bucket/dataset/acquisition.json",
+        )
+
+    @patch(
+        "aind_exaspim_data_transformation.imaris_job.utils.upload_file_to_s3"
+    )
+    def test_no_metadata_files_present(self, mock_upload):
+        """An empty dataset root does not raise."""
+        mock_upload.side_effect = self._fake_upload
+        with tempfile.TemporaryDirectory() as temp_dir:
+            job = self._make_job(Path(temp_dir))
+
+            job._upload_metadata_files()
+
+        self.assertEqual(mock_upload.call_count, 2)
+
+    @patch(
+        "aind_exaspim_data_transformation.imaris_job.utils.upload_file_to_s3"
+    )
+    def test_no_s3_location_skips_upload(self, mock_upload):
+        """Nothing is uploaded when s3_location is unset."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "acquisition.json").write_text("{}")
+            job = self._make_job(root, s3_location=None)
+
+            job._upload_metadata_files()
+
+        mock_upload.assert_not_called()
+
+    @patch(
+        "aind_exaspim_data_transformation.imaris_job.utils.upload_file_to_s3"
+    )
+    def test_required_upload_failure_raises(self, mock_upload):
+        """A failed acquisition.json upload aborts the job."""
+        mock_upload.side_effect = ClientError(
+            {"Error": {"Code": "AccessDenied"}}, "PutObject"
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "acquisition.json").write_text("{}")
+            job = self._make_job(root)
+
+            with self.assertRaises(RuntimeError) as ctx:
+                job._upload_metadata_files()
+
+        self.assertIn("acquisition.json", str(ctx.exception))
+
+    @patch(
+        "aind_exaspim_data_transformation.imaris_job.utils.upload_file_to_s3"
+    )
+    def test_optional_upload_failure_is_logged(self, mock_upload):
+        """A failed instrument.json upload does not abort the job."""
+
+        def _fail_instrument(local_path, s3_uri, content_type=None):
+            """Raise only for the optional metadata file."""
+            if s3_uri.endswith("instrument.json"):
+                raise ClientError(
+                    {"Error": {"Code": "AccessDenied"}}, "PutObject"
+                )
+
+        mock_upload.side_effect = _fail_instrument
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "acquisition.json").write_text("{}")
+            (root / "instrument.json").write_text("{}")
+            job = self._make_job(root)
+
+            job._upload_metadata_files()
+
+        self.assertEqual(mock_upload.call_count, 2)
 
 
 class TestBuildGlobalShardTaskList(unittest.TestCase):
