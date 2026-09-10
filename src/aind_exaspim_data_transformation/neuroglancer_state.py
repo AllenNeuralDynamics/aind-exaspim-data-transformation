@@ -24,6 +24,14 @@ _CH_FILENAME_RE = re.compile(r"_ch_(\d+)", re.IGNORECASE)
 # Neuroglancer viewer base URL (public demo instance)
 DEFAULT_VIEWER_URL = "https://neuroglancer-demo.appspot.com"
 
+# Upper bound on the number of voxels kept from a single tile when
+# estimating contrast limits. Percentiles are pooled across tiles, so
+# the retained arrays are held simultaneously; capping them keeps the
+# estimate memory-bounded regardless of tile size or tile count. Two
+# million samples still put ~2000 values above the 99.9th percentile,
+# which is ample for a stable contrast window.
+_MAX_RETAINED_VOXELS = 2_000_000
+
 # Mapping of common laser wavelengths (nm) to hex colours for rendering.
 _WAVELENGTH_TO_HEX: Dict[int, str] = {
     405: "ff00ff",  # violet
@@ -481,13 +489,21 @@ def _select_sample_level(reader, max_sample_voxels: int) -> int:
 def _sample_intensities(
     imaris_path: str,
     max_sample_voxels: int = 64_000_000,
+    max_retained_voxels: int = _MAX_RETAINED_VOXELS,
 ) -> np.ndarray:
     """Load nonzero intensity samples from a single Imaris tile.
 
-    Reads the finest resolution level that fits ``max_sample_voxels`` and
-    returns its nonzero (foreground) voxels flattened. If the level is
-    entirely zero, the raw voxels are returned so percentiles are still
-    defined.
+    Reads the finest resolution level that fits ``max_sample_voxels``
+    and returns its nonzero (foreground) voxels flattened. If the level
+    is entirely zero, the raw voxels are returned so percentiles are
+    still defined.
+
+    The selected level is decimated with a uniform stride down to
+    ``max_retained_voxels`` values *before* the foreground mask is
+    applied. The returned array is therefore small and bounded, which
+    matters because the caller pools one of these per tile: without the
+    cap, eight 64-megavoxel tiles pool into gigabytes and the node's
+    OOM killer takes out the Dask workers.
 
     Parameters
     ----------
@@ -495,6 +511,9 @@ def _sample_intensities(
         Path to the ``.ims`` file.
     max_sample_voxels : int
         Voxel budget used to select the resolution level.
+    max_retained_voxels : int
+        Maximum number of voxels retained from the selected level.
+        Values ``<= 0`` retain every voxel.
 
     Returns
     -------
@@ -511,8 +530,16 @@ def _sample_intensities(
         )
         arr = reader.as_array(data_path)
 
-    nonzero = arr[arr > 0]
-    return nonzero if nonzero.size else arr.ravel()
+    # ``ravel`` is a view for the C-contiguous arrays h5py returns, and
+    # the stride below is also a view, so the large ``arr`` buffer is
+    # never duplicated and is released when this function returns.
+    flat = np.ravel(arr)
+    if 0 < max_retained_voxels < flat.size:
+        stride = -(-flat.size // max_retained_voxels)
+        flat = flat[::stride]
+
+    nonzero = flat[flat > 0]
+    return nonzero if nonzero.size else flat
 
 
 def compute_contrast_limits(

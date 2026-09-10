@@ -35,12 +35,12 @@ from codeocean.computation import DataAssetsRunParam, RunParams
 
 # ── Configurable defaults ─────────────────────────────────
 IMAGE = "ghcr.io/allenneuraldynamics/aind-exaspim-data-transformation"
-IMAGE_VERSION = "dev-7753082"  # "dev-71b3d5b"
+IMAGE_VERSION = "dev-dcf0018"  # "dev-71b3d5b"
 ENDPOINT = "http://aind-data-transfer-service"
 S3_BUCKET = "open"  # maps to aind-open-data-dev
 JOB_TYPE = "exaSPIM"  # registered job type on the dev cluster
 MAX_PARTITIONS = 128
-PROCESSING_SPEED_GB_PER_HOUR = 12_200
+PROCESSING_SPEED_GB_PER_HOUR = 8_200
 
 # Code Ocean pipeline is only triggered for exaSPIM *screening* datasets, which
 # are small (< 300 GB total). Larger datasets are transformed/uploaded only.
@@ -252,13 +252,13 @@ def submit_exaspim_job(
 
 def test_submit_exaspim_job():
     # dataset_name = "exaSPIM_718162_2026-01-29_19-28-50"
-    dataset_name = "exaSPIM_704521_2026-08-26_13-48-05"
-    data_dir = f"/allen/aind/stage/exaSPIM/{dataset_name}/exaSPIM"
+    dataset_name = "exaSPIM_721829_2026-09-09_17-45-52"
+    data_dir = f"/allen/aind/stage/exaSPIM/1x_screening/{dataset_name}/exaSPIM"
 
     submit_exaspim_job(
         source=data_dir,
         project_name="Single Neuron Reconstructions",
-        subject_id="704521",
+        subject_id="721829",
         single_tile_upload=False,  # Set to True for testing with a single tile
     )
 
