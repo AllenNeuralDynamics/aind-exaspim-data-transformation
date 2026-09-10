@@ -36,6 +36,15 @@ from aind_exaspim_data_transformation.utils.io_utils import ImarisReader
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "DEBUG"))
 
+# Metadata files that live at the dataset root (one level above the tile
+# folder) and are mirrored to the S3 dataset root by worker 0. The boolean
+# marks files whose absence from S3 leaves the uploaded dataset unusable, and
+# whose upload failure therefore aborts the job rather than being logged.
+_ROOT_METADATA_FILES: Tuple[Tuple[str, bool], ...] = (
+    ("acquisition.json", True),
+    ("instrument.json", False),
+)
+
 
 class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
     """Job to handle compressing and uploading Imaris data."""
@@ -400,9 +409,15 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
         Get the physical world-space translation for a specific tile from
         acquisition.json.
 
-        Tile positions are matched by ``file_name`` within the ``tiles``
-        array. The function looks for a ``translation`` entry inside each
-        tile's ``coordinate_transformations`` list.
+        Handles both schema v1 (``tiles`` array, ``translation``
+        coordinate transform) and schema v2 (``data_streams`` array,
+        ``Translation`` entry in ``image_to_acquisition_transform``).
+        Tile positions are matched by ``file_name`` in both cases.
+
+        Falling back to the Imaris ``ExtMin`` values is a last resort:
+        on some exaSPIM datasets the ``ExtMin0``/``ExtMin1`` stage
+        coordinates are transposed relative to the array's X/Y axes, which
+        silently mis-tiles the mosaic. acquisition.json is authoritative.
 
         The acquisition.json schema stores tile positions in **millimetres**
         (X, Y, Z order); this method converts them to **micrometres** in
@@ -431,11 +446,6 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
             file does not exist, the tile is not found in the manifest, or no
             translation transform is present for that tile.
         """
-        # acquisition.json stores tile positions in mm; convert to µm.
-        # NOTE: verify this factor against a real acquisition before
-        # deploying to a new instrument or schema version.
-        _MM_TO_UM = 1000.0
-
         if not acquisition_path.is_file():
             return None
 
@@ -448,6 +458,75 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
             )
             return None
 
+        schema_version_str = (
+            acquisition_config.get("schema_version") or "0.0.0"
+        )
+
+        if version.parse(schema_version_str) >= version.parse("2.0.0"):
+            return ImarisCompressionJob._get_tile_translation_schema_2(
+                acquisition_config, tile_filename
+            )
+
+        return ImarisCompressionJob._get_tile_translation_schema_1(
+            acquisition_config, tile_filename
+        )
+
+    @staticmethod
+    def _translation_mm_to_zyx_um(
+        raw: List, tile_filename: str
+    ) -> Optional[List[float]]:
+        """Convert an ``[X, Y, Z]`` mm translation to ``[Z, Y, X]`` µm.
+
+        Parameters
+        ----------
+        raw : list
+            Translation as ``[X, Y, Z]`` in millimetres.
+        tile_filename : str
+            Basename of the tile, used for logging.
+
+        Returns
+        -------
+        List[float] or None
+            Translation as ``[Z, Y, X]`` in micrometres, or ``None`` if
+            ``raw`` does not have exactly three components.
+        """
+        # acquisition.json stores tile positions in mm; convert to µm.
+        # NOTE: verify this factor against a real acquisition before
+        # deploying to a new instrument or schema version.
+        _MM_TO_UM = 1000.0
+
+        if len(raw) != 3:
+            logging.warning(
+                "Unexpected translation length %d for tile %s; "
+                "expected 3 (X, Y, Z).",
+                len(raw),
+                tile_filename,
+            )
+            return None
+
+        # acquisition.json: translation = [X, Y, Z] in mm
+        x_mm = float(raw[0])
+        y_mm = float(raw[1])
+        z_mm = float(raw[2])
+
+        translation_zyx_um = [
+            z_mm * _MM_TO_UM,
+            y_mm * _MM_TO_UM,
+            x_mm * _MM_TO_UM,
+        ]
+        logging.info(
+            "Tile %s: acquisition.json translation ZYX (µm) = %s",
+            tile_filename,
+            translation_zyx_um,
+        )
+        return translation_zyx_um
+
+    @staticmethod
+    def _get_tile_translation_schema_1(
+        acquisition_config: Dict,
+        tile_filename: str,
+    ) -> Optional[List[float]]:
+        """Look up a per-tile translation in schema v1 ``tiles``."""
         for tile in acquisition_config.get("tiles", []):
             if tile.get("file_name") != tile_filename:
                 continue
@@ -456,36 +535,52 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
                 if transform.get("type") != "translation":
                     continue
 
-                raw = transform.get("translation", [])
-                if len(raw) != 3:
-                    logging.warning(
-                        "Unexpected translation length %d for tile %s; "
-                        "expected 3 (X, Y, Z).",
-                        len(raw),
-                        tile_filename,
-                    )
-                    return None
-
-                # acquisition.json: translation = [X, Y, Z] in mm
-                x_mm = float(raw[0])
-                y_mm = float(raw[1])
-                z_mm = float(raw[2])
-
-                translation_zyx_um = [
-                    z_mm * _MM_TO_UM,
-                    y_mm * _MM_TO_UM,
-                    x_mm * _MM_TO_UM,
-                ]
-                logging.info(
-                    "Tile %s: acquisition.json translation ZYX (µm) = %s",
-                    tile_filename,
-                    translation_zyx_um,
+                return ImarisCompressionJob._translation_mm_to_zyx_um(
+                    transform.get("translation", []), tile_filename
                 )
-                return translation_zyx_um
 
         logging.warning(
             "Tile '%s' not found in acquisition.json or has no translation "
             "transform; falling back to Imaris ExtMin values.",
+            tile_filename,
+        )
+        return None
+
+    @staticmethod
+    def _get_tile_translation_schema_2(
+        acquisition_config: Dict,
+        tile_filename: str,
+    ) -> Optional[List[float]]:
+        """Look up a per-tile translation in schema v2 ``data_streams``."""
+        for stream in acquisition_config.get("data_streams", []):
+            for config in stream.get("configurations", []):
+                for image in config.get("images", []):
+                    if image.get("file_name") != tile_filename:
+                        continue
+
+                    transforms = image.get(
+                        "image_to_acquisition_transform", []
+                    )
+                    for transform in transforms:
+                        if transform.get("object_type") != "Translation":
+                            continue
+
+                        return ImarisCompressionJob._translation_mm_to_zyx_um(
+                            transform.get("translation", []),
+                            tile_filename,
+                        )
+
+                    logging.warning(
+                        "Tile '%s' has no Translation transform in "
+                        "acquisition.json (schema v2); falling back to "
+                        "Imaris ExtMin values.",
+                        tile_filename,
+                    )
+                    return None
+
+        logging.warning(
+            "Tile '%s' not found in acquisition.json data_streams "
+            "(schema v2); falling back to Imaris ExtMin values.",
             tile_filename,
         )
         return None
@@ -825,14 +920,81 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
                 exc_info=True,
             )
 
+    def _upload_metadata_files(self) -> None:
+        """Mirror dataset-root metadata files to the S3 dataset root.
+
+        Copies ``acquisition.json`` and, when present, ``instrument.json``
+        from the local dataset root to the S3 dataset root. Uploading these
+        from within the job -- rather than relying on a separate transfer
+        step -- guarantees that the acquisition published to S3 is the same
+        one used to place the tiles, so the geometry described by the
+        metadata always matches the geometry baked into the Zarr.
+
+        A file that is simply absent is skipped. A file that is present but
+        cannot be uploaded is treated as a failure, and for
+        ``acquisition.json`` that failure aborts the job: a dataset on S3
+        without an acquisition is not usable, so continuing would only
+        produce a broken upload more quietly.
+
+        Raises
+        ------
+        RuntimeError
+            If a required metadata file exists locally but cannot be
+            uploaded.
+        """
+        if self.job_settings.s3_location is None:
+            logging.info(
+                "No s3_location configured — skipping metadata upload."
+            )
+            return
+
+        dataset_root = Path(self.job_settings.input_source).parent
+        s3_dataset_root = self._get_dataset_root_s3(
+            self.job_settings.s3_location
+        )
+
+        for filename, required in _ROOT_METADATA_FILES:
+            local_path = dataset_root.joinpath(filename)
+            s3_uri = f"{s3_dataset_root}/{filename}"
+
+            try:
+                utils.upload_file_to_s3(
+                    local_path,
+                    s3_uri,
+                    content_type="application/json",
+                )
+                logging.info("Uploaded %s to %s", local_path, s3_uri)
+            except FileNotFoundError:
+                # Absent is not an error: instrument.json is optional, and
+                # acquisition.json absence is reported by the neuroglancer
+                # step that runs next.
+                logging.info(
+                    "%s not found at %s — nothing to upload.",
+                    filename,
+                    local_path,
+                )
+            except (OSError, ClientError, BotoCoreError) as exc:
+                if required:
+                    raise RuntimeError(
+                        f"Failed to upload required metadata file "
+                        f"{local_path} to {s3_uri}"
+                    ) from exc
+
+                logging.error(
+                    "METADATA UPLOAD FAILED for optional file %s — "
+                    "continuing with compression. Error: %s",
+                    local_path,
+                    exc,
+                    exc_info=True,
+                )
+
     def _upload_derivatives_folder(self):
         """
-        Uploads the 'derivatives' folder if it exists in the input source.
+        Uploads the 'derivatives' folder if it exists in the dataset root.
         This is optional and will be skipped if the folder doesn't exist.
         """
-        derivatives_path = Path(self.job_settings.input_source).joinpath(
-            "derivatives"
-        )
+        dataset_root = Path(self.job_settings.input_source).parent
+        derivatives_path = dataset_root.joinpath("derivatives")
 
         if not derivatives_path.exists():
             logging.info(
@@ -842,12 +1004,15 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
             return
 
         if self.job_settings.s3_location is not None:
-            s3_derivatives_dir = f"{self.job_settings.s3_location}/derivatives"
+            s3_dataset_root = self._get_dataset_root_s3(
+                self.job_settings.s3_location
+            )
+            s3_derivatives_dir = f"{s3_dataset_root}/derivatives"
             logging.info(
                 f"Uploading {derivatives_path} to {s3_derivatives_dir}"
             )
             try:
-                utils.sync_dir_to_s3(derivatives_path, s3_derivatives_dir)
+                utils.upload_dir_to_s3(derivatives_path, s3_derivatives_dir)
                 logging.info(f"{derivatives_path} uploaded to s3.")
             except (
                 OSError,
@@ -1067,7 +1232,8 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
         """Main entrypoint to run the job."""
         job_start_time = time()
 
-        # Worker 0 handles one-time setup: derivatives + neuroglancer state
+        # Worker 0 handles one-time setup: metadata + derivatives +
+        # neuroglancer state
         logging.info(
             "Running partition %s of %s",
             self.job_settings.partition_to_process,
@@ -1079,6 +1245,7 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
             self.job_settings.partition_to_process,
         )
         if self.job_settings.partition_to_process == 0:
+            self._upload_metadata_files()
             self._generate_neuroglancer_state()
             self._upload_derivatives_folder()
 

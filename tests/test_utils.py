@@ -98,6 +98,81 @@ class TestS3Helpers(unittest.TestCase):
         self.assertIn("cp", args[0])
         self.assertTrue(kwargs["shell"])
 
+    def test_parse_s3_uri(self):
+        """Splits an s3 uri into bucket and key."""
+        bucket, key = utils.parse_s3_uri("s3://bucket/a/b/c.json")
+        self.assertEqual(bucket, "bucket")
+        self.assertEqual(key, "a/b/c.json")
+
+    def test_parse_s3_uri_rejects_non_s3(self):
+        """Raises for URIs that are not s3."""
+        with self.assertRaises(ValueError):
+            utils.parse_s3_uri("/local/path.json")
+
+    @patch("aind_exaspim_data_transformation.utils.utils.boto3.client")
+    def test_upload_file_to_s3(self, mock_client):
+        """Uploads file bytes via put_object."""
+        mock_s3 = MagicMock()
+        mock_client.return_value = mock_s3
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "acquisition.json"
+            path.write_text('{"a": 1}')
+            utils.upload_file_to_s3(
+                path,
+                "s3://bucket/dataset/acquisition.json",
+                content_type="application/json",
+            )
+
+        mock_s3.put_object.assert_called_once_with(
+            Bucket="bucket",
+            Key="dataset/acquisition.json",
+            Body=b'{"a": 1}',
+            ContentType="application/json",
+        )
+
+    @patch("aind_exaspim_data_transformation.utils.utils.boto3.client")
+    def test_upload_file_to_s3_without_content_type(self, mock_client):
+        """Omits ContentType when not supplied."""
+        mock_s3 = MagicMock()
+        mock_client.return_value = mock_s3
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "notes.txt"
+            path.write_text("hello")
+            utils.upload_file_to_s3(path, "s3://bucket/notes.txt")
+
+        self.assertNotIn("ContentType", mock_s3.put_object.call_args.kwargs)
+
+    def test_upload_file_to_s3_missing_file(self):
+        """Propagates FileNotFoundError for absent files."""
+        missing = Path(tempfile.gettempdir()) / "definitely-missing.json"
+        if missing.exists():
+            missing.unlink()
+        with self.assertRaises(FileNotFoundError):
+            utils.upload_file_to_s3(missing, "s3://bucket/key.json")
+
+    @patch("aind_exaspim_data_transformation.utils.utils.upload_file_to_s3")
+    def test_upload_dir_to_s3(self, mock_upload):
+        """Uploads nested files preserving relative paths."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "a.json").write_text("{}")
+            nested = root / "sub"
+            nested.mkdir()
+            (nested / "b.yaml").write_text("k: v")
+
+            utils.upload_dir_to_s3(root, "s3://bucket/prefix/")
+
+        uploaded = sorted(call.args[1] for call in mock_upload.call_args_list)
+        self.assertEqual(
+            uploaded,
+            [
+                "s3://bucket/prefix/a.json",
+                "s3://bucket/prefix/sub/b.yaml",
+            ],
+        )
+
     @patch("aind_exaspim_data_transformation.utils.utils.boto3.client")
     def test_write_json_s3(self, mock_client):
         """Writes JSON to S3 via boto3."""

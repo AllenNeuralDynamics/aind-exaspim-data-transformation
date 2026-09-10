@@ -35,18 +35,18 @@ from codeocean.computation import DataAssetsRunParam, RunParams
 
 # ── Configurable defaults ─────────────────────────────────
 IMAGE = "ghcr.io/allenneuraldynamics/aind-exaspim-data-transformation"
-IMAGE_VERSION = "dev-df92e49"
+IMAGE_VERSION = "dev-7753082"  # "dev-71b3d5b"
 ENDPOINT = "http://aind-data-transfer-service"
 S3_BUCKET = "open"  # maps to aind-open-data-dev
 JOB_TYPE = "exaSPIM"  # registered job type on the dev cluster
-MAX_PARTITIONS = 256
+MAX_PARTITIONS = 128
 PROCESSING_SPEED_GB_PER_HOUR = 12_200
 
 # Code Ocean pipeline is only triggered for exaSPIM *screening* datasets, which
 # are small (< 300 GB total). Larger datasets are transformed/uploaded only.
 CODEOCEAN_PIPELINE_ID = "5ad577f1-a6e6-49a7-af95-876480c7ed21"
 CODEOCEAN_MOUNT = "exaSPIM_screening_dataset"
-SCREENING_MAX_BYTES = 300 * 1024**3  # 300 GB
+SCREENING_MAX_BYTES = 900 * 1024**3  # 900 GB
 SCREENING_PARTITIONS = 16
 # ────────────────────────────────────────────────────────────────────
 
@@ -193,7 +193,7 @@ def submit_exaspim_job(
         "final_check_s3_folder_exist": {"skip_task": True},
         "check_metadata_files": {"skip_task": True},
         "gather_preliminary_metadata": {"skip_task": False},
-        "register_data_asset": {"skip_task": not is_screening},
+        "register_data_asset": {"skip_task": False},
         "get_codeocean_asset_id": {"skip_task": not is_screening},
         "run_codeocean_pipeline": {"skip_task": not is_screening},
         "remove_source_folders": {"skip_task": True},
@@ -252,13 +252,13 @@ def submit_exaspim_job(
 
 def test_submit_exaspim_job():
     # dataset_name = "exaSPIM_718162_2026-01-29_19-28-50"
-    dataset_name = "exaSPIM_823507_2026-06-30_16-49-27"
+    dataset_name = "exaSPIM_704521_2026-08-26_13-48-05"
     data_dir = f"/allen/aind/stage/exaSPIM/{dataset_name}/exaSPIM"
 
     submit_exaspim_job(
         source=data_dir,
         project_name="Single Neuron Reconstructions",
-        subject_id="823507",
+        subject_id="704521",
         single_tile_upload=False,  # Set to True for testing with a single tile
     )
 
