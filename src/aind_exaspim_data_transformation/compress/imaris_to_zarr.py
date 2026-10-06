@@ -1703,6 +1703,30 @@ def imaris_to_zarr_distributed(
 
         logger.debug("Using voxel_size=%s", voxel_size)
 
+        # Per-tile pyramid clamp: different tiles/channels can ship
+        # different numbers of pre-computed Imaris resolution levels, so
+        # cap the requested ``n_lvls`` against what this particular file
+        # actually contains. Mirrors the behavior already in
+        # ``imaris_to_zarr_translate_pyramid`` and
+        # ``imaris_to_zarr_writer``. Each worker re-runs this clamp
+        # deterministically against the same source file, so no extra
+        # scheduling coordination is required.
+        available_levels = reader.n_levels
+        logger.info(
+            f"Imaris file contains {available_levels} resolution levels"
+        )
+        if n_lvls > available_levels:
+            logger.warning(
+                "Requested n_lvls=%s exceeds available Imaris levels=%s "
+                "for %s; clamping to %s",
+                n_lvls,
+                available_levels,
+                imaris_path,
+                available_levels,
+            )
+            n_lvls = available_levels
+        logger.info(f"Will translate {n_lvls} pyramid levels")
+
         base_path = _data_path(0)
         # Use the authoritative metadata shape (no HDF5 chunk-alignment
         # padding) so the zarr array shape matches the true image extent.
@@ -1830,13 +1854,6 @@ def imaris_to_zarr_distributed(
 
             level_info[lvl] = (lvl_spec, lvl_shape_3d)
 
-    # Small helper for deterministic partitioning
-    def _partition_list(lst: List[Any], num_parts: int) -> List[List[Any]]:
-        parts = [[] for _ in range(num_parts)]
-        for idx, item in enumerate(lst):
-            parts[idx % num_parts].append(item)
-        return parts
-
     # =========================================================================
     # Step 3: Create and submit base-level shard tasks (optionally subset)
     # =========================================================================
@@ -1919,26 +1936,59 @@ def imaris_to_zarr_distributed(
                 lvl_data_path,
             )
 
-            # Partition shards for this level across all workers
+            # Assign this level's shards to whichever worker owns the
+            # corresponding base-level shard. Base shards are partitioned
+            # globally upstream, so every base shard has exactly one owner
+            # among the workers that process this tile. Mapping each
+            # downsample shard back to a base shard therefore guarantees
+            # complete, collision-free coverage -- even for small tiles with
+            # very few base shards.
+            #
+            # Partitioning downsample shards independently across
+            # ``num_of_partitions`` (the previous behaviour) is unsafe: a
+            # worker only enters this function for a tile when it owns a base
+            # shard of that tile, so downsample shards assigned to
+            # non-participating partitions were silently dropped. This is why
+            # many small (488) tiles were missing pyramid levels below level 0.
             lvl_shard_indices = enumerate_shard_indices(
                 cast(Tuple[int, int, int], lvl_shape_3d), shard_shape
             )
-            lvl_partitioned = _partition_list(
-                lvl_shard_indices, num_of_partitions
+            base_shard_set = set(base_shard_indices)
+            base_grid = tuple(
+                (cast(Tuple[int, int, int], shape_3d)[a] + shard_shape[a] - 1)
+                // shard_shape[a]
+                for a in range(3)
             )
-            my_lvl_shards = lvl_partitioned[partition_to_process]
+            lvl_grid = tuple(
+                (
+                    cast(Tuple[int, int, int], lvl_shape_3d)[a]
+                    + shard_shape[a]
+                    - 1
+                )
+                // shard_shape[a]
+                for a in range(3)
+            )
+            my_lvl_shards = [
+                idx
+                for idx in lvl_shard_indices
+                if tuple(
+                    min(
+                        idx[a] * base_grid[a] // lvl_grid[a],
+                        base_grid[a] - 1,
+                    )
+                    for a in range(3)
+                )
+                in base_shard_set
+            ]
             logger.debug(
-                "Level %s partitioning: total=%s my_shards=%s",
+                "Level %s ownership: total=%s my_shards=%s "
+                "(base_grid=%s lvl_grid=%s)",
                 lvl,
                 len(lvl_shard_indices),
                 len(my_lvl_shards),
+                base_grid,
+                lvl_grid,
             )
-
-            if not my_lvl_shards:
-                logger.info(
-                    f"Worker {partition_to_process}: no shards for level {lvl}"
-                )
-                continue
 
             lvl_tasks = create_shard_tasks(
                 imaris_path=imaris_path,
@@ -2001,11 +2051,20 @@ def imaris_to_zarr_distributed(
         )
 
     # =========================================================================
-    # Step 5: Write OME-NGFF metadata (once)
+    # Step 5: Write OME-NGFF metadata (once per tile)
     # =========================================================================
-    should_write_metadata = (
-        dask_client is not None or partition_to_process == 0
-    )
+    # The root-group ``zarr.json`` (multiscales metadata) must be written
+    # exactly once per tile. Under shard-level partitioning each worker only
+    # processes a subset of a tile's base-level shards, and small tiles may
+    # never be touched by worker 0. To guarantee coverage without a single
+    # point of failure, the worker that owns the base-origin shard ``(0, 0, 0)``
+    # writes the metadata: every tile has exactly one such shard, assigned to
+    # exactly one worker. ``base_shard_indices`` resolves to the full shard
+    # list when no subset was supplied (whole-tile conversion), so it also
+    # covers the non-partitioned case. The Dask path handles a whole tile in
+    # one call, so it always writes.
+    owns_origin_shard = (0, 0, 0) in base_shard_indices
+    should_write_metadata = dask_client is not None or owns_origin_shard
 
     if should_write_metadata:
         metadata_dict = write_ome_ngff_metadata(
@@ -2024,7 +2083,7 @@ def imaris_to_zarr_distributed(
     else:
         logger.info(
             f"Metadata write skipped for worker {partition_to_process}; "
-            "assumes worker 0 will write metadata."
+            "owner of base shard (0, 0, 0) writes metadata for this tile."
         )
 
     return store_path

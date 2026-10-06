@@ -7,13 +7,23 @@ import os
 import platform
 import subprocess
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
+from urllib.parse import urlparse
 
 import boto3
 import numpy as np
+from botocore.config import Config
 from numpy.typing import ArrayLike
 
 from aind_exaspim_data_transformation.models import PathLike
+
+# Bound the time a stalled S3 write can block a worker and retry transient
+# failures instead of surfacing them to the caller immediately.
+S3_CLIENT_CONFIG = Config(
+    retries={"max_attempts": 5, "mode": "standard"},
+    connect_timeout=30,
+    read_timeout=60,
+)
 
 
 def add_leading_dim(data: ArrayLike) -> ArrayLike:
@@ -210,6 +220,106 @@ def copy_file_to_s3(file_to_upload: PathLike, s3_location: str) -> None:
     ]
 
     subprocess.run(base_command, shell=shell, check=True)
+
+
+def parse_s3_uri(s3_uri: str) -> Tuple[str, str]:
+    """
+    Splits an ``s3://bucket/key`` URI into its bucket and key components.
+
+    Parameters
+    ----------
+    s3_uri : str
+        URI to split.
+
+    Returns
+    -------
+    Tuple[str, str]
+        The bucket name and the object key. The key has no leading slash.
+
+    Raises
+    ------
+    ValueError
+        If the URI does not use the ``s3`` scheme or has no bucket.
+
+    """
+    parsed = urlparse(s3_uri)
+
+    if parsed.scheme != "s3" or not parsed.netloc:
+        raise ValueError(f"Not a valid s3 uri: {s3_uri}")
+
+    return parsed.netloc, parsed.path.lstrip("/")
+
+
+def upload_file_to_s3(
+    file_to_upload: PathLike,
+    s3_uri: str,
+    content_type: Optional[str] = None,
+) -> None:
+    """
+    Uploads a single local file to s3 using boto3.
+
+    Preferred over :func:`copy_file_to_s3`, which shells out to the AWS CLI
+    and therefore fails with ``FileNotFoundError`` in environments where the
+    ``aws`` binary is not installed.
+
+    The file is read eagerly so that local problems (a missing file, a
+    permissions error) raise the corresponding :class:`OSError` subclass and
+    stay distinguishable from S3-side failures.
+
+    Parameters
+    ----------
+    file_to_upload : PathLike
+        Local file to upload.
+    s3_uri : str
+        Full destination URI, e.g. ``s3://bucket/prefix/acquisition.json``.
+    content_type : Optional[str]
+        Value for the object's ``Content-Type`` header. Default: None.
+
+    Returns
+    -------
+    None
+
+    """
+    bucket, key = parse_s3_uri(s3_uri)
+    body = Path(file_to_upload).read_bytes()
+
+    extra_kwargs = {}
+    if content_type is not None:
+        extra_kwargs["ContentType"] = content_type
+
+    s3 = boto3.client("s3", config=S3_CLIENT_CONFIG)
+    s3.put_object(Bucket=bucket, Key=key, Body=body, **extra_kwargs)
+
+
+def upload_dir_to_s3(directory_to_upload: PathLike, s3_uri: str) -> None:
+    """
+    Uploads every file below a local directory to an s3 prefix using boto3.
+
+    Relative paths are preserved. Unlike :func:`sync_dir_to_s3` this does not
+    require the AWS CLI, and it does not delete objects that are absent
+    locally.
+
+    Parameters
+    ----------
+    directory_to_upload : PathLike
+        Local directory whose contents should be uploaded.
+    s3_uri : str
+        Destination prefix, e.g. ``s3://bucket/dataset/derivatives``.
+
+    Returns
+    -------
+    None
+
+    """
+    directory = Path(directory_to_upload)
+    prefix = s3_uri.rstrip("/")
+
+    for path in sorted(directory.rglob("*")):
+        if not path.is_file():
+            continue
+
+        relative = path.relative_to(directory).as_posix()
+        upload_file_to_s3(path, f"{prefix}/{relative}")
 
 
 def validate_slices(start_slice: int, end_slice: int, len_dir: int):

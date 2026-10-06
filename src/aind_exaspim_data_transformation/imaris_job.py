@@ -25,14 +25,25 @@ from aind_exaspim_data_transformation.models import (
     CompressorName,
     ImarisJobSettings,
 )
-from aind_exaspim_data_transformation.upgrade_metadata import (
-    get_additional_metadata,
-    upgrade_metadata,
+from aind_exaspim_data_transformation.neuroglancer_state import (
+    build_neuroglancer_state,
+    compute_contrast_limits_by_channel,
+    generate_neuroglancer_url,
+    parse_tiles_from_acquisition,
 )
 from aind_exaspim_data_transformation.utils import utils
 from aind_exaspim_data_transformation.utils.io_utils import ImarisReader
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "DEBUG"))
+
+# Metadata files that live at the dataset root (one level above the tile
+# folder) and are mirrored to the S3 dataset root by worker 0. The boolean
+# marks files whose absence from S3 leaves the uploaded dataset unusable, and
+# whose upload failure therefore aborts the job rather than being logged.
+_ROOT_METADATA_FILES: Tuple[Tuple[str, bool], ...] = (
+    ("acquisition.json", True),
+    ("instrument.json", False),
+)
 
 
 class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
@@ -221,6 +232,175 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
         return [z, y, x]
 
     @staticmethod
+    def _get_tile_voxel_resolution_from_acquisition(
+        acquisition_path: Path,
+        tile_filename: str,
+    ) -> Optional[List[float]]:
+        """
+        Get the per-tile voxel resolution from an ``acquisition.json`` file.
+
+        Tiles in an acquisition can be acquired at different resolutions
+        (e.g. one channel imaged at higher Z-step than another). This
+        method matches the requested tile by ``file_name`` and returns the
+        scale transform declared for that specific tile, so each channel's
+        ``zarr.json`` can carry its own ``coordinateTransformations``.
+
+        The acquisition.json schema stores ``scale`` in ``[X, Y, Z]``
+        order; this method returns ``[Z, Y, X]`` to match the convention
+        used by the writer pipeline.
+
+        Parameters
+        ----------
+        acquisition_path : Path
+            Path to the ``acquisition.json`` file.
+        tile_filename : str
+            Basename of the Imaris file to look up (e.g.
+            ``"tile_000000_ch_561.ims"``).
+
+        Returns
+        -------
+        List[float] or None
+            Voxel size as ``[Z, Y, X]`` in micrometres, or ``None`` if the
+            file does not exist, the tile is not found in the manifest, or
+            no scale transform is present for that tile. Callers are
+            expected to fall back to the dataset-level resolution or to
+            the Imaris file metadata in that case.
+        """
+        if not acquisition_path.is_file():
+            return None
+
+        try:
+            acquisition_config = utils.read_json_as_dict(acquisition_path)
+        except Exception as exc:  # pylint: disable=broad-except
+            logging.warning(
+                "Could not parse acquisition.json for tile voxel "
+                "resolution: %s",
+                exc,
+            )
+            return None
+
+        schema_version_str = (
+            acquisition_config.get("schema_version") or "0.0.0"
+        )
+
+        if version.parse(schema_version_str) >= version.parse("2.0.0"):
+            return ImarisCompressionJob._get_tile_voxel_resolution_schema_2(
+                acquisition_config, tile_filename
+            )
+
+        return ImarisCompressionJob._get_tile_voxel_resolution_schema_1(
+            acquisition_config, tile_filename
+        )
+
+    @staticmethod
+    def _get_tile_voxel_resolution_schema_1(
+        acquisition_config: Dict,
+        tile_filename: str,
+    ) -> Optional[List[float]]:
+        """Look up a per-tile scale transform in schema v1 ``tiles``."""
+        for tile in acquisition_config.get("tiles", []):
+            if tile.get("file_name") != tile_filename:
+                continue
+
+            for transform in tile.get("coordinate_transformations", []):
+                if transform.get("type") != "scale":
+                    continue
+
+                scale = transform.get("scale", [])
+                if len(scale) != 3:
+                    logging.warning(
+                        "Unexpected scale length %d for tile %s; "
+                        "expected 3 (X, Y, Z).",
+                        len(scale),
+                        tile_filename,
+                    )
+                    return None
+
+                # acquisition.json: scale = [X, Y, Z]
+                x = float(scale[0])
+                y = float(scale[1])
+                z = float(scale[2])
+                voxel_size_zyx = [z, y, x]
+                logging.info(
+                    "Tile %s: acquisition.json voxel resolution ZYX (µm)"
+                    " = %s",
+                    tile_filename,
+                    voxel_size_zyx,
+                )
+                return voxel_size_zyx
+
+            logging.warning(
+                "Tile '%s' has no scale transform in acquisition.json; "
+                "falling back to dataset-level resolution.",
+                tile_filename,
+            )
+            return None
+
+        logging.warning(
+            "Tile '%s' not found in acquisition.json tiles list; "
+            "falling back to dataset-level resolution.",
+            tile_filename,
+        )
+        return None
+
+    @staticmethod
+    def _get_tile_voxel_resolution_schema_2(
+        acquisition_config: Dict,
+        tile_filename: str,
+    ) -> Optional[List[float]]:
+        """Look up a per-tile scale transform in schema v2 ``data_streams``."""
+        for stream in acquisition_config.get("data_streams", []):
+            for config in stream.get("configurations", []):
+                for image in config.get("images", []):
+                    if image.get("file_name") != tile_filename:
+                        continue
+
+                    transforms = image.get(
+                        "image_to_acquisition_transform", []
+                    )
+                    for transform in transforms:
+                        if transform.get("object_type") != "Scale":
+                            continue
+
+                        scale = transform.get("scale", [])
+                        if len(scale) != 3:
+                            logging.warning(
+                                "Unexpected scale length %d for tile %s; "
+                                "expected 3 (X, Y, Z).",
+                                len(scale),
+                                tile_filename,
+                            )
+                            return None
+
+                        # acquisition.json: scale = [X, Y, Z]
+                        x = float(scale[0])
+                        y = float(scale[1])
+                        z = float(scale[2])
+                        voxel_size_zyx = [z, y, x]
+                        logging.info(
+                            "Tile %s: acquisition.json voxel resolution "
+                            "ZYX (µm) = %s",
+                            tile_filename,
+                            voxel_size_zyx,
+                        )
+                        return voxel_size_zyx
+
+                    logging.warning(
+                        "Tile '%s' has no Scale transform in "
+                        "acquisition.json (schema v2); falling back to "
+                        "dataset-level resolution.",
+                        tile_filename,
+                    )
+                    return None
+
+        logging.warning(
+            "Tile '%s' not found in acquisition.json data_streams "
+            "(schema v2); falling back to dataset-level resolution.",
+            tile_filename,
+        )
+        return None
+
+    @staticmethod
     def _get_tile_translation_from_acquisition(
         acquisition_path: Path,
         tile_filename: str,
@@ -229,9 +409,15 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
         Get the physical world-space translation for a specific tile from
         acquisition.json.
 
-        Tile positions are matched by ``file_name`` within the ``tiles``
-        array. The function looks for a ``translation`` entry inside each
-        tile's ``coordinate_transformations`` list.
+        Handles both schema v1 (``tiles`` array, ``translation``
+        coordinate transform) and schema v2 (``data_streams`` array,
+        ``Translation`` entry in ``image_to_acquisition_transform``).
+        Tile positions are matched by ``file_name`` in both cases.
+
+        Falling back to the Imaris ``ExtMin`` values is a last resort:
+        on some exaSPIM datasets the ``ExtMin0``/``ExtMin1`` stage
+        coordinates are transposed relative to the array's X/Y axes, which
+        silently mis-tiles the mosaic. acquisition.json is authoritative.
 
         The acquisition.json schema stores tile positions in **millimetres**
         (X, Y, Z order); this method converts them to **micrometres** in
@@ -260,11 +446,6 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
             file does not exist, the tile is not found in the manifest, or no
             translation transform is present for that tile.
         """
-        # acquisition.json stores tile positions in mm; convert to µm.
-        # NOTE: verify this factor against a real acquisition before
-        # deploying to a new instrument or schema version.
-        _MM_TO_UM = 1000.0
-
         if not acquisition_path.is_file():
             return None
 
@@ -277,6 +458,75 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
             )
             return None
 
+        schema_version_str = (
+            acquisition_config.get("schema_version") or "0.0.0"
+        )
+
+        if version.parse(schema_version_str) >= version.parse("2.0.0"):
+            return ImarisCompressionJob._get_tile_translation_schema_2(
+                acquisition_config, tile_filename
+            )
+
+        return ImarisCompressionJob._get_tile_translation_schema_1(
+            acquisition_config, tile_filename
+        )
+
+    @staticmethod
+    def _translation_mm_to_zyx_um(
+        raw: List, tile_filename: str
+    ) -> Optional[List[float]]:
+        """Convert an ``[X, Y, Z]`` mm translation to ``[Z, Y, X]`` µm.
+
+        Parameters
+        ----------
+        raw : list
+            Translation as ``[X, Y, Z]`` in millimetres.
+        tile_filename : str
+            Basename of the tile, used for logging.
+
+        Returns
+        -------
+        List[float] or None
+            Translation as ``[Z, Y, X]`` in micrometres, or ``None`` if
+            ``raw`` does not have exactly three components.
+        """
+        # acquisition.json stores tile positions in mm; convert to µm.
+        # NOTE: verify this factor against a real acquisition before
+        # deploying to a new instrument or schema version.
+        _MM_TO_UM = 1000.0
+
+        if len(raw) != 3:
+            logging.warning(
+                "Unexpected translation length %d for tile %s; "
+                "expected 3 (X, Y, Z).",
+                len(raw),
+                tile_filename,
+            )
+            return None
+
+        # acquisition.json: translation = [X, Y, Z] in mm
+        x_mm = float(raw[0])
+        y_mm = float(raw[1])
+        z_mm = float(raw[2])
+
+        translation_zyx_um = [
+            z_mm * _MM_TO_UM,
+            y_mm * _MM_TO_UM,
+            x_mm * _MM_TO_UM,
+        ]
+        logging.info(
+            "Tile %s: acquisition.json translation ZYX (µm) = %s",
+            tile_filename,
+            translation_zyx_um,
+        )
+        return translation_zyx_um
+
+    @staticmethod
+    def _get_tile_translation_schema_1(
+        acquisition_config: Dict,
+        tile_filename: str,
+    ) -> Optional[List[float]]:
+        """Look up a per-tile translation in schema v1 ``tiles``."""
         for tile in acquisition_config.get("tiles", []):
             if tile.get("file_name") != tile_filename:
                 continue
@@ -285,36 +535,52 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
                 if transform.get("type") != "translation":
                     continue
 
-                raw = transform.get("translation", [])
-                if len(raw) != 3:
-                    logging.warning(
-                        "Unexpected translation length %d for tile %s; "
-                        "expected 3 (X, Y, Z).",
-                        len(raw),
-                        tile_filename,
-                    )
-                    return None
-
-                # acquisition.json: translation = [X, Y, Z] in mm
-                x_mm = float(raw[0])
-                y_mm = float(raw[1])
-                z_mm = float(raw[2])
-
-                translation_zyx_um = [
-                    z_mm * _MM_TO_UM,
-                    y_mm * _MM_TO_UM,
-                    x_mm * _MM_TO_UM,
-                ]
-                logging.info(
-                    "Tile %s: acquisition.json translation ZYX (µm) = %s",
-                    tile_filename,
-                    translation_zyx_um,
+                return ImarisCompressionJob._translation_mm_to_zyx_um(
+                    transform.get("translation", []), tile_filename
                 )
-                return translation_zyx_um
 
         logging.warning(
             "Tile '%s' not found in acquisition.json or has no translation "
             "transform; falling back to Imaris ExtMin values.",
+            tile_filename,
+        )
+        return None
+
+    @staticmethod
+    def _get_tile_translation_schema_2(
+        acquisition_config: Dict,
+        tile_filename: str,
+    ) -> Optional[List[float]]:
+        """Look up a per-tile translation in schema v2 ``data_streams``."""
+        for stream in acquisition_config.get("data_streams", []):
+            for config in stream.get("configurations", []):
+                for image in config.get("images", []):
+                    if image.get("file_name") != tile_filename:
+                        continue
+
+                    transforms = image.get(
+                        "image_to_acquisition_transform", []
+                    )
+                    for transform in transforms:
+                        if transform.get("object_type") != "Translation":
+                            continue
+
+                        return ImarisCompressionJob._translation_mm_to_zyx_um(
+                            transform.get("translation", []),
+                            tile_filename,
+                        )
+
+                    logging.warning(
+                        "Tile '%s' has no Translation transform in "
+                        "acquisition.json (schema v2); falling back to "
+                        "Imaris ExtMin values.",
+                        tile_filename,
+                    )
+                    return None
+
+        logging.warning(
+            "Tile '%s' not found in acquisition.json data_streams "
+            "(schema v2); falling back to Imaris ExtMin values.",
             tile_filename,
         )
         return None
@@ -365,21 +631,26 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
             Tuple[int, int, int], tuple(self.job_settings.scale_factor)
         )
 
-        # Try to get voxel resolution from acquisition.json if it exists
-        # Otherwise, it will be extracted from each Imaris file individually
+        # Try to get a dataset-level voxel resolution from acquisition.json
+        # if it exists. This is used only as a fallback when a tile is not
+        # listed in the acquisition manifest or has no per-tile scale
+        # transform. Per-tile resolution is preferred and resolved inside
+        # the loop below so multi-channel datasets with different
+        # resolutions get distinct ``zarr.json`` scale transforms.
         # acquisition.json lives one level above the input_source (exaSPIM) folder
         acquisition_path = input_source_path.parent.joinpath(
             "acquisition.json"
         )
 
-        voxel_size_zyx = None
+        dataset_voxel_size_zyx: Optional[List[float]] = None
         if acquisition_path.exists():
             try:
-                voxel_size_zyx = self._get_voxel_resolution(
+                dataset_voxel_size_zyx = self._get_voxel_resolution(
                     acquisition_path=acquisition_path
                 )
                 logging.info(
-                    f"Using voxel size from acquisition.json: {voxel_size_zyx}"
+                    "Dataset-level voxel size from acquisition.json: %s",
+                    dataset_voxel_size_zyx,
                 )
             except Exception as e:
                 logging.warning(
@@ -403,8 +674,15 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
             logging.info(f"Converting {stack}")
             stack_name = stack.stem
 
-            # If voxel size wasn't available from acquisition.json,
-            # extract it from the Imaris file
+            # Resolve voxel size per stack so each channel/tile can carry
+            # its own scale transform in the written zarr.json.
+            # Priority: per-tile acquisition lookup → dataset-level
+            # acquisition value → Imaris file metadata.
+            voxel_size_zyx = self._get_tile_voxel_resolution_from_acquisition(
+                acquisition_path, stack.name
+            )
+            if voxel_size_zyx is None:
+                voxel_size_zyx = dataset_voxel_size_zyx
             if voxel_size_zyx is None:
                 voxel_size_zyx = self._get_voxel_size_from_imaris(stack)
 
@@ -536,36 +814,98 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
         dataset_root_path = str(Path(parsed.path.rstrip("/")).parent)
         return f"s3://{parsed.netloc}{dataset_root_path}"
 
-    def _get_additional_metadata(self):
-        """Fetch subject.json and procedures.json from the metadata service.
+    def _generate_neuroglancer_state(self):
+        """Generate and upload a Neuroglancer JSON state file to S3.
+
+        Parses ``acquisition.json`` to extract tile layout and voxel sizes,
+        groups tiles by channel (wavelength), builds a neuroglancer state
+        pointing to the ``zarr3://`` sources on S3, and uploads the result
+        to the dataset root.
 
         Only runs when ``s3_location`` is configured.  Errors are logged
         but do **not** abort the compression pipeline.
         """
+        import boto3
+
         if self.job_settings.s3_location is None:
             logging.info(
-                "No s3_location configured — skipping metadata fetch."
+                "No s3_location configured — skipping neuroglancer "
+                "state generation."
             )
             return
 
-        s3_dataset_root = self._get_dataset_root_s3(
-            self.job_settings.s3_location
+        input_source_path = Path(self.job_settings.input_source)
+        acquisition_path = input_source_path.parent.joinpath(
+            "acquisition.json"
         )
 
-        logging.info(
-            "Fetching additional metadata for source_dir=%s, "
-            "s3_location=%s (dataset root: %s)",
-            self.job_settings.input_source,
-            self.job_settings.s3_location,
-            s3_dataset_root,
-        )
-        try:
-            get_additional_metadata(
-                source_dir=str(self.job_settings.input_source),
-                s3_location=s3_dataset_root,
-                dry_run=False,
+        if not acquisition_path.is_file():
+            logging.warning(
+                "acquisition.json not found at %s — cannot generate "
+                "neuroglancer state.",
+                acquisition_path,
             )
-            logging.info("Additional metadata fetch completed successfully.")
+            return
+
+        try:
+            acquisition_config = utils.read_json_as_dict(acquisition_path)
+            tiles_by_channel, voxel_sizes_um = parse_tiles_from_acquisition(
+                acquisition_config
+            )
+
+            if not tiles_by_channel:
+                logging.warning(
+                    "No tiles found in acquisition.json — skipping "
+                    "neuroglancer state generation."
+                )
+                return
+
+            # Resolve the S3 destination + self-referential viewer URL
+            # first so it can be embedded as the first key of the state.
+            s3_dataset_root = self._get_dataset_root_s3(
+                self.job_settings.s3_location
+            )
+            parsed = urlparse(s3_dataset_root)
+            bucket = parsed.netloc
+            key = (
+                parsed.path.lstrip("/").rstrip("/")
+                + "/"
+                + self.job_settings.neuroglancer_json_filename
+            )
+            s3_json_uri = f"s3://{bucket}/{key}"
+            viewer_url = generate_neuroglancer_url(
+                s3_json_uri=s3_json_uri,
+                viewer_url=self.job_settings.neuroglancer_viewer_url,
+            )
+
+            # Sample the Imaris tiles to derive per-channel contrast limits.
+            contrast_limits_by_channel = compute_contrast_limits_by_channel(
+                tiles_by_channel=tiles_by_channel,
+                input_source_dir=str(input_source_path),
+            )
+
+            state = build_neuroglancer_state(
+                tiles_by_channel=tiles_by_channel,
+                voxel_sizes_um=voxel_sizes_um,
+                s3_modality_path=self.job_settings.s3_location,
+                contrast_limits_by_channel=contrast_limits_by_channel,
+                ng_link=viewer_url,
+            )
+
+            s3_client = boto3.client("s3")
+            state_json = json.dumps(state, indent=2)
+            s3_client.put_object(
+                Bucket=bucket,
+                Key=key,
+                Body=state_json.encode("utf-8"),
+                ContentType="application/json",
+            )
+
+            logging.info(
+                "Neuroglancer state uploaded to %s", s3_json_uri
+            )
+            logging.info("Neuroglancer viewer URL: %s", viewer_url)
+
         except (
             OSError,
             ValueError,
@@ -574,71 +914,87 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
             BotoCoreError,
         ) as exc:
             logging.error(
-                "METADATA FETCH FAILED — continuing with compression. "
-                "Error: %s",
+                "NEUROGLANCER STATE GENERATION FAILED — continuing with "
+                "compression. Error: %s",
                 exc,
                 exc_info=True,
             )
 
-    def _upgrade_metadata(self):
-        """Upgrade v1 metadata files and upload to S3.
+    def _upload_metadata_files(self) -> None:
+        """Mirror dataset-root metadata files to the S3 dataset root.
 
-        Only runs when ``s3_location`` is configured.  Errors are logged
-        but do **not** abort the compression pipeline.
+        Copies ``acquisition.json`` and, when present, ``instrument.json``
+        from the local dataset root to the S3 dataset root. Uploading these
+        from within the job -- rather than relying on a separate transfer
+        step -- guarantees that the acquisition published to S3 is the same
+        one used to place the tiles, so the geometry described by the
+        metadata always matches the geometry baked into the Zarr.
 
-        The pipeline provides ``s3_location`` with a modality subfolder
-        (e.g. ``s3://bucket/dataset/SPIM``).  Metadata files belong at
-        the dataset root, so the modality segment is stripped before
-        calling :func:`upgrade_metadata`.
+        A file that is simply absent is skipped. A file that is present but
+        cannot be uploaded is treated as a failure, and for
+        ``acquisition.json`` that failure aborts the job: a dataset on S3
+        without an acquisition is not usable, so continuing would only
+        produce a broken upload more quietly.
+
+        Raises
+        ------
+        RuntimeError
+            If a required metadata file exists locally but cannot be
+            uploaded.
         """
         if self.job_settings.s3_location is None:
             logging.info(
-                "No s3_location configured — skipping metadata upgrade."
+                "No s3_location configured — skipping metadata upload."
             )
             return
 
-        # s3_location includes the modality subfolder (e.g. .../SPIM).
-        # Metadata files must go to the dataset root (one level up).
+        dataset_root = Path(self.job_settings.input_source).parent
         s3_dataset_root = self._get_dataset_root_s3(
             self.job_settings.s3_location
         )
 
-        logging.info(
-            "Starting metadata upgrade for source_dir=%s, "
-            "s3_location=%s (dataset root: %s)",
-            self.job_settings.input_source,
-            self.job_settings.s3_location,
-            s3_dataset_root,
-        )
-        try:
-            upgrade_metadata(
-                source_dir=str(self.job_settings.input_source),
-                s3_location=s3_dataset_root,
-                dry_run=False,
-            )
-            logging.info("Metadata upgrade completed successfully.")
-        except (
-            OSError,
-            ValueError,
-            RuntimeError,
-            ClientError,
-            BotoCoreError,
-        ) as exc:
-            logging.error(
-                "METADATA UPGRADE FAILED — continuing with compression. "
-                "Error: %s",
-                exc,
-                exc_info=True,
-            )
+        for filename, required in _ROOT_METADATA_FILES:
+            local_path = dataset_root.joinpath(filename)
+            s3_uri = f"{s3_dataset_root}/{filename}"
+
+            try:
+                utils.upload_file_to_s3(
+                    local_path,
+                    s3_uri,
+                    content_type="application/json",
+                )
+                logging.info("Uploaded %s to %s", local_path, s3_uri)
+            except FileNotFoundError:
+                # Absent is not an error: instrument.json is optional, and
+                # acquisition.json absence is reported by the neuroglancer
+                # step that runs next.
+                logging.info(
+                    "%s not found at %s — nothing to upload.",
+                    filename,
+                    local_path,
+                )
+            except (OSError, ClientError, BotoCoreError) as exc:
+                if required:
+                    raise RuntimeError(
+                        f"Failed to upload required metadata file "
+                        f"{local_path} to {s3_uri}"
+                    ) from exc
+
+                logging.error(
+                    "METADATA UPLOAD FAILED for optional file %s — "
+                    "continuing with compression. Error: %s",
+                    local_path,
+                    exc,
+                    exc_info=True,
+                )
 
     def _upload_derivatives_folder(self):
         """
-        Uploads the 'derivatives' folder if it exists in the input source.
+        Uploads the 'derivatives' folder if it exists in the dataset root.
         This is optional and will be skipped if the folder doesn't exist.
         """
-        derivatives_path = Path(self.job_settings.input_source).joinpath(
-            "derivatives"
-        )
+        dataset_root = Path(self.job_settings.input_source).parent
+        derivatives_path = dataset_root.joinpath("derivatives")
 
         if not derivatives_path.exists():
             logging.info(
@@ -648,12 +1004,15 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
             return
 
         if self.job_settings.s3_location is not None:
-            s3_derivatives_dir = f"{self.job_settings.s3_location}/derivatives"
+            s3_dataset_root = self._get_dataset_root_s3(
+                self.job_settings.s3_location
+            )
+            s3_derivatives_dir = f"{s3_dataset_root}/derivatives"
             logging.info(
                 f"Uploading {derivatives_path} to {s3_derivatives_dir}"
             )
             try:
-                utils.sync_dir_to_s3(derivatives_path, s3_derivatives_dir)
+                utils.upload_dir_to_s3(derivatives_path, s3_derivatives_dir)
                 logging.info(f"{derivatives_path} uploaded to s3.")
             except (
                 OSError,
@@ -713,20 +1072,23 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
             )
             return
 
-        # Try to read voxel size from acquisition.json once
+        # Read a dataset-level voxel size from acquisition.json once as a
+        # fallback. The per-tile lookup happens inside
+        # ``_process_file_shards`` so each channel/tile can carry its own
+        # scale transform in the written zarr.json.
         # acquisition.json lives one level above the input_source (exaSPIM) folder
         acquisition_path = Path(
             self.job_settings.input_source
         ).parent.joinpath("acquisition.json")
-        voxel_size_zyx = None
+        dataset_voxel_size_zyx: Optional[List[float]] = None
         if acquisition_path.exists():
             try:
-                voxel_size_zyx = self._get_voxel_resolution(
+                dataset_voxel_size_zyx = self._get_voxel_resolution(
                     acquisition_path=acquisition_path
                 )
                 logging.info(
-                    "Using voxel size from acquisition.json: %s",
-                    voxel_size_zyx,
+                    "Dataset-level voxel size from acquisition.json: %s",
+                    dataset_voxel_size_zyx,
                 )
             except Exception as exc:  # pylint: disable=broad-except
                 logging.warning(
@@ -773,7 +1135,7 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
                 self._process_file_shards(
                     stack_path=stack_path,
                     shard_indices=shard_indices,
-                    voxel_size_zyx=voxel_size_zyx,
+                    dataset_voxel_size_zyx=dataset_voxel_size_zyx,
                     dask_client=dask_client,
                     acquisition_path=acquisition_path,
                 )
@@ -787,7 +1149,7 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
         self,
         stack_path: Path,
         shard_indices: List[tuple[int, int, int]],
-        voxel_size_zyx: Optional[List[float]] = None,
+        dataset_voxel_size_zyx: Optional[List[float]] = None,
         dask_client: Optional[Any] = None,
         acquisition_path: Optional[Path] = None,
     ) -> None:
@@ -805,6 +1167,19 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
             bucket_name = parsed.netloc
             output_path = Path(parsed.path.lstrip("/"))
 
+        # Resolve voxel size per stack so each channel/tile can carry
+        # its own scale transform in the written zarr.json.
+        # Priority: per-tile acquisition lookup → dataset-level
+        # acquisition value → Imaris file metadata.
+        voxel_size_zyx: Optional[List[float]] = None
+        if acquisition_path is not None:
+            voxel_size_zyx = (
+                self._get_tile_voxel_resolution_from_acquisition(
+                    acquisition_path, stack_path.name
+                )
+            )
+        if voxel_size_zyx is None:
+            voxel_size_zyx = dataset_voxel_size_zyx
         if voxel_size_zyx is None:
             voxel_size_zyx = self._get_voxel_size_from_imaris(stack_path)
 
@@ -857,7 +1232,8 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
         """Main entrypoint to run the job."""
         job_start_time = time()
 
-        # Worker 0 handles one-time setup: metadata upgrade + derivatives
+        # Worker 0 handles one-time setup: metadata + derivatives +
+        # neuroglancer state
         logging.info(
             "Running partition %s of %s",
             self.job_settings.partition_to_process,
@@ -869,8 +1245,8 @@ class ImarisCompressionJob(GenericEtl[ImarisJobSettings]):
             self.job_settings.partition_to_process,
         )
         if self.job_settings.partition_to_process == 0:
-            self._get_additional_metadata()
-            self._upgrade_metadata()
+            self._upload_metadata_files()
+            self._generate_neuroglancer_state()
             self._upload_derivatives_folder()
 
         if self.job_settings.partition_mode == "shard":
