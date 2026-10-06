@@ -35,7 +35,7 @@ from codeocean.computation import DataAssetsRunParam, RunParams
 
 # ── Configurable defaults ─────────────────────────────────
 IMAGE = "ghcr.io/allenneuraldynamics/aind-exaspim-data-transformation"
-IMAGE_VERSION = "dev-dcf0018"  # "dev-71b3d5b"
+IMAGE_VERSION = "dev-62b7331"  # "dev-71b3d5b"
 ENDPOINT = "http://aind-data-transfer-service"
 S3_BUCKET = "open"  # maps to aind-open-data-dev
 JOB_TYPE = "exaSPIM"  # registered job type on the dev cluster
@@ -69,12 +69,12 @@ def _total_ims_size_bytes(ims_files: list[str]) -> int:
     return sum(os.path.getsize(f) for f in ims_files)
 
 
-def _estimate_timeout(n_tiles: int, tile_size_mb: float) -> int:
+def _estimate_timeout(total_gb: float) -> int:
     """Return estimated timeout in minutes based on data volume."""
-    buffer_min = 8*60  # Add 8 hours as a buffer for overhead, variability, etc.
+    buffer_min = 2*60  # Add 2 hours as a buffer for overhead, variability, etc.
     variability_factor = 2 # Account for variability in processing speed
     return int(
-        (n_tiles * tile_size_mb / 1024) / (PROCESSING_SPEED_GB_PER_HOUR) * 60 * variability_factor + buffer_min
+        (total_gb / (PROCESSING_SPEED_GB_PER_HOUR)) * 60 * variability_factor + buffer_min
     )
 
 
@@ -147,7 +147,7 @@ def submit_exaspim_job(
         num_partitions = SCREENING_PARTITIONS
     else:
         num_partitions = MAX_PARTITIONS
-    timeout_min = _estimate_timeout(n_tiles, tile_size_mb)
+    timeout_min = _estimate_timeout(total_gb)
 
     
     
@@ -180,6 +180,8 @@ def submit_exaspim_job(
         image_resources={
             "array": f"0-{num_partitions - 1}",
             "time_limit": {"set": True, "number": timeout_min},
+            "comment": "RETRY 2", # to retry 2 times on failure
+
         },
         job_settings=exaspim_job_settings,
     )
@@ -252,13 +254,13 @@ def submit_exaspim_job(
 
 def test_submit_exaspim_job():
     # dataset_name = "exaSPIM_718162_2026-01-29_19-28-50"
-    dataset_name = "exaSPIM_721829_2026-09-09_17-45-52"
-    data_dir = f"/allen/aind/stage/exaSPIM/1x_screening/{dataset_name}/exaSPIM"
+    dataset_name = "exaSPIM_730903_2026-09-01_16-55-09"
+    data_dir = f"/allen/aind/stage/exaSPIM/{dataset_name}/exaSPIM"
 
     submit_exaspim_job(
         source=data_dir,
         project_name="Single Neuron Reconstructions",
-        subject_id="721829",
+        subject_id="730903",
         single_tile_upload=False,  # Set to True for testing with a single tile
     )
 
@@ -279,8 +281,8 @@ def main():
     parser.add_argument(
         "--project-name",
         type=str,
-        default="MSMA Platform",
-        help="Project name (default: MSMA Platform).",
+        default="Single Neuron Reconstructions",
+        help="Project name (default: Single Neuron Reconstructions).",
     )
     parser.add_argument(
         "--subject-id",
@@ -304,5 +306,5 @@ def main():
 
 
 if __name__ == "__main__":
-    # main()
-    test_submit_exaspim_job()
+    main()
+    # test_submit_exaspim_job()
