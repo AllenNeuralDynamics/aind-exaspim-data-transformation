@@ -28,14 +28,18 @@ from aind_data_transfer_service.models.core import (
     Task,
     UploadJobConfigsV2,
 )
-from codeocean.computation import DataAssetsRunParam, RunParams
+from codeocean.computation import (
+    DataAssetsRunParam,
+    PipelineProcessParams,
+    RunParams,
+)
 
 # from aind_data_schema_models.platforms import Platform
 
 
 # ── Configurable defaults ─────────────────────────────────
 IMAGE = "ghcr.io/allenneuraldynamics/aind-exaspim-data-transformation"
-IMAGE_VERSION = "dev-62b7331"  # "dev-71b3d5b"
+IMAGE_VERSION = "1.0.0" #"dev-62b7331"  # "dev-71b3d5b"
 ENDPOINT = "http://aind-data-transfer-service"
 S3_BUCKET = "open"  # maps to aind-open-data-dev
 JOB_TYPE = "exaSPIM"  # registered job type on the dev cluster
@@ -44,10 +48,19 @@ PROCESSING_SPEED_GB_PER_HOUR = 8_200
 
 # Code Ocean pipeline is only triggered for exaSPIM *screening* datasets, which
 # are small (< 300 GB total). Larger datasets are transformed/uploaded only.
-CODEOCEAN_PIPELINE_ID = "5ad577f1-a6e6-49a7-af95-876480c7ed21"
+CODEOCEAN_SCREENING_PIPELINE_ID = "5ad577f1-a6e6-49a7-af95-876480c7ed21"
+CODEOCEAN_5x_PIPELINE_ID = "63273560-d0bb-4dd8-9ab4-636b9e14d53c"
 CODEOCEAN_MOUNT = "exaSPIM_screening_dataset"
 SCREENING_MAX_BYTES = 900 * 1024**3  # 900 GB
 SCREENING_PARTITIONS = 16
+
+# Neuroglancer link -> Smartsheet capsule in the 5x pipeline.
+NEUROGLANCER_SMARTSHEET_PROCESS = (
+    "capsule_write_production_neuroglancer_link_to_smartsheet_1"
+)
+SMARTSHEET_ID = "590053667458948"
+# S3_BUCKET "open" resolves to this bucket on the production cluster.
+S3_BUCKET_NAME = "aind-open-data"
 # ────────────────────────────────────────────────────────────────────
 
 
@@ -149,8 +162,12 @@ def submit_exaspim_job(
         num_partitions = MAX_PARTITIONS
     timeout_min = _estimate_timeout(total_gb)
 
-    
-    
+    # Matches UploadJobConfigsV2.s3_prefix (platform is not set, so the
+    # prefix is "<subject_id>_<acq_datetime>").
+    s3_asset_path = (
+        f"s3://{S3_BUCKET_NAME}/"
+        f"{subject_id}_{acq_datetime:%Y-%m-%d_%H-%M-%S}/SPIM/"
+    )
 
     print(f"Tiles found       : {n_tiles}")
     print(f"First tile size   : {tile_size_mb:,.0f} MB")
@@ -204,7 +221,7 @@ def submit_exaspim_job(
     if is_screening:
         codeocean_pipeline_settings = PipelineMonitorSettings(
             run_params=RunParams(
-                pipeline_id=CODEOCEAN_PIPELINE_ID,
+                pipeline_id=CODEOCEAN_SCREENING_PIPELINE_ID,
                 data_assets=[
                     DataAssetsRunParam(id="", mount=CODEOCEAN_MOUNT)
                 ],
@@ -213,6 +230,32 @@ def submit_exaspim_job(
                 tags=["exaSPIM", "RAW"],
             ),
         )
+        tasks["codeocean_pipeline_settings"] = {
+            Modality.SPIM.abbreviation: {
+                "skip_task": False,
+                "job_settings": {
+                    "pipeline_monitor_settings": (
+                        codeocean_pipeline_settings.model_dump(
+                            mode="json", exclude_none=True
+                        )
+                    )
+                },
+            }
+        }
+    else: #full 5x datasets
+        codeocean_pipeline_settings = PipelineMonitorSettings(
+                    computation_polling_interval=180.0,
+                    data_asset_ready_polling_interval=10.0,
+                    run_params=RunParams(
+                        pipeline_id=CODEOCEAN_5x_PIPELINE_ID,
+                        processes=[
+                            PipelineProcessParams(
+                                name=NEUROGLANCER_SMARTSHEET_PROCESS,
+                                parameters=[s3_asset_path, SMARTSHEET_ID],
+                            )
+                        ],
+                    ),
+                )
         tasks["codeocean_pipeline_settings"] = {
             Modality.SPIM.abbreviation: {
                 "skip_task": False,
