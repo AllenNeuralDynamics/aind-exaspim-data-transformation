@@ -46,8 +46,8 @@ JOB_TYPE = "exaSPIM"  # registered job type on the dev cluster
 MAX_PARTITIONS = 128
 PROCESSING_SPEED_GB_PER_HOUR = 8_200
 
-# Code Ocean pipeline is only triggered for exaSPIM *screening* datasets, which
-# are small (< 300 GB total). Larger datasets are transformed/uploaded only.
+# Screening datasets (< 900 GB) run the screening pipeline; everything else
+# runs the production 5x pipeline.
 CODEOCEAN_SCREENING_PIPELINE_ID = "5ad577f1-a6e6-49a7-af95-876480c7ed21"
 CODEOCEAN_5x_PIPELINE_ID = "63273560-d0bb-4dd8-9ab4-636b9e14d53c"
 CODEOCEAN_MOUNT = "exaSPIM_screening_dataset"
@@ -176,7 +176,8 @@ def submit_exaspim_job(
     print(f"Timeout           : {timeout_min} min")
     print(
         f"Screening dataset : {is_screening} "
-        f"(Code Ocean pipeline {'ENABLED' if is_screening else 'SKIPPED'})"
+        f"(Code Ocean pipeline "
+        f"{CODEOCEAN_SCREENING_PIPELINE_ID if is_screening else CODEOCEAN_5x_PIPELINE_ID})"
     )
     if single_tile_upload:
         print(f"Single tile mode  : ENABLED (testing first tile only)")
@@ -203,18 +204,21 @@ def submit_exaspim_job(
         job_settings=exaspim_job_settings,
     )
 
-    # Only screening datasets (< 300 GB) trigger the Code Ocean pipeline.
+    # Both screening and 5x datasets trigger a Code Ocean pipeline; only the
+    # pipeline_id and run_params differ. get_codeocean_asset_id must run: the
+    # DAG injects the registered asset into run_params.data_assets, and a null
+    # id fails validation in the pipeline monitor capsule.
     tasks = {
         "modality_transformation_settings": {
             Modality.SPIM.abbreviation: custom_exaspim_task,
         },
         "check_s3_folder_exists": {"skip_task": True},
         "final_check_s3_folder_exist": {"skip_task": True},
-        "check_metadata_files": {"skip_task": True},
+        "check_metadata_files": {"skip_task": False},
         "gather_preliminary_metadata": {"skip_task": False},
         "register_data_asset": {"skip_task": False},
-        "get_codeocean_asset_id": {"skip_task": not is_screening},
-        "run_codeocean_pipeline": {"skip_task": not is_screening},
+        "get_codeocean_asset_id": {"skip_task": False},
+        "run_codeocean_pipeline": {"skip_task": False},
         "remove_source_folders": {"skip_task": True},
     }
 
@@ -244,8 +248,6 @@ def submit_exaspim_job(
         }
     else: #full 5x datasets
         codeocean_pipeline_settings = PipelineMonitorSettings(
-                    computation_polling_interval=180.0,
-                    data_asset_ready_polling_interval=10.0,
                     run_params=RunParams(
                         pipeline_id=CODEOCEAN_5x_PIPELINE_ID,
                         processes=[
