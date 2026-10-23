@@ -214,12 +214,12 @@ def submit_exaspim_job(
         },
         "check_s3_folder_exists": {"skip_task": True},
         "final_check_s3_folder_exist": {"skip_task": True},
-        "check_metadata_files": {"skip_task": False},
+        "check_metadata_files": {"skip_task": True},
         "gather_preliminary_metadata": {"skip_task": False},
         "register_data_asset": {"skip_task": False},
         "get_codeocean_asset_id": {"skip_task": False},
         "run_codeocean_pipeline": {"skip_task": False},
-        "remove_source_folders": {"skip_task": True},
+        "remove_source_folders": {"skip_task": False},
     }
 
     if is_screening:
